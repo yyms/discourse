@@ -145,6 +145,7 @@ class PostAction < ActiveRecord::Base
     post_action_type_id == PostActionType.types[:notify_user] ||
     post_action_type_id == PostActionType.types[:notify_moderators]
   end
+
   # A custom rate limiter for this model
   def post_action_rate_limiter
     return unless is_flag? || is_bookmark? || is_like?
