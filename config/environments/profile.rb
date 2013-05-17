@@ -44,4 +44,7 @@ Discourse::Application.configure do
 
   # for profiling with perftools
   # config.middleware.use ::Rack::PerftoolsProfiler, default_printer: 'gif'
+  config.logger = Logger.new('/dev/null')
 end
+
+
