@@ -12,11 +12,11 @@ class Guardian
   end
 
   def is_admin?
-    @user && @user.admin?
+    @user.try(:admin?)
   end
 
   def is_staff?
-    @user && @user.staff?
+    @user.try(:staff?)
   end
 
   # Can the user see the object?
@@ -148,7 +148,7 @@ class Guardian
 
   def can_grant_moderation?(user)
     return false unless is_admin?
-    return false unless user
+    return false unless user.present?
     return false if @user.id == user.id && !is_admin?
     return false if user.moderator?
     true
@@ -156,14 +156,14 @@ class Guardian
 
   def can_delete_user?(user_to_delete)
     return false unless is_admin?
-    return false unless user_to_delete
+    return false unless user_to_delete.present?
     return false if user_to_delete.post_count > 0
     true
   end
 
   # Can we see who acted on a post in a particular way?
   def can_see_post_actors?(topic, post_action_type_id)
-    return false unless topic
+    return false unless topic.present?
 
     type_symbol = PostActionType.types[post_action_type_id]
     return false if type_symbol == :bookmark
@@ -180,7 +180,7 @@ class Guardian
   # Support sites that have to approve users
   def can_access_forum?
     return true unless SiteSetting.must_approve_users?
-    return false unless @user
+    return false unless @user.present?
 
     # Staff can't lock themselves out of a site
     return true if is_staff?
@@ -189,13 +189,13 @@ class Guardian
   end
 
   def can_see_pending_invites_from?(user)
-    return false unless user && @user
+    return false unless user.present? && @user.present?
     return user == @user
   end
 
   # For now, can_invite_to is basically can_see?
   def can_invite_to?(object)
-    return false unless @user
+    return false unless @user.present?
     return false unless can_see?(object)
     return false if SiteSetting.must_approve_users?
     @user.has_trust_level?(:regular) || @user.staff?
@@ -209,7 +209,7 @@ class Guardian
 
   def can_see_private_messages?(user_id)
     return true if is_staff?
-    return false unless @user
+    return false unless @user.present?
     @user.id == user_id
   end
 
@@ -286,7 +286,7 @@ class Guardian
 
   # Recovery Method
   def can_recover_post?(post)
-    return false unless @user
+    return false unless @user.present?
     is_staff?
   end
 
@@ -304,7 +304,7 @@ class Guardian
   def can_delete_post_action?(post_action)
 
     # You can only undo your own actions
-    return false unless @user
+    return false unless @user.present?
     return false unless post_action.user_id == @user.id
     return false if post_action.is_private_message?
 
@@ -314,7 +314,7 @@ class Guardian
 
   def can_send_private_message?(target)
     return false unless User === target || Group === target
-    return false unless @user
+    return false unless @user.present?
 
     # Can't send message to yourself
     return false if User === target && @user.id == target.id
@@ -326,25 +326,25 @@ class Guardian
   end
 
   def can_reply_as_new_topic?(topic)
-    return false unless @user
-    return false unless topic
+    return false unless @user.present?
+    return false unless topic.present?
     return false if topic.private_message?
 
     @user.has_trust_level?(:basic)
   end
 
   def can_see_topic?(topic)
-    return false unless topic
+    return false unless topic.present?
 
     return true if @user && is_staff?
     return false if topic.deleted_at
 
     if topic.category && topic.category.secure
-      return false unless @user && can_see_category?(topic.category)
+      return false unless @user.present? && can_see_category?(topic.category)
     end
 
     if topic.private_message?
-      return false unless @user
+      return false unless @user.present?
       return true if topic.all_allowed_users.where(id: @user.id).exists?
       return is_admin?
     end
@@ -352,9 +352,9 @@ class Guardian
   end
 
   def can_see_post?(post)
-    return false unless post
+    return false unless post.present?
 
-    return true if @user && is_staff?
+    return true if @user.present? && is_staff?
     return false if post.deleted_at.present?
 
     can_see_topic?(post.topic)
@@ -362,7 +362,7 @@ class Guardian
 
   def can_see_category?(category)
     return true unless category.secure
-    return false unless @user
+    return false unless @user.present?
 
     secure_category_ids.include?(category.id)
   end
@@ -378,17 +378,17 @@ class Guardian
     return false if post.blank?
 
     taken = opts[:taken_actions]
-    taken = taken.keys if taken
+    taken = taken.keys if taken.present?
 
     # we always allow flagging
     if PostActionType.is_flag?(action_key)
       return false unless @user.has_trust_level?(:basic)
 
-      if taken
+      if taken.present?
         return false unless (taken & PostActionType.flag_types.values).empty?
       end
     else
-      return false if taken && taken.include?(PostActionType.types[action_key])
+      return false if taken.present? && taken.include?(PostActionType.types[action_key])
     end
 
     # nothing else on archived posts

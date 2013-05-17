@@ -125,7 +125,7 @@ gem 'sprockets', git: 'https://github.com/SamSaffron/sprockets.git', branch: 'ra
 # this is an optional gem, it provides a high performance replacement
 # to String#blank? a method that is called quite frequently in current
 # ActiveRecord, this may change in the future
-gem 'fast_blank' #, github: "SamSaffron/fast_blank"
+#gem 'fast_blank' #, github: "SamSaffron/fast_blank"
 
 # this provides a very efficient lru cache
 gem 'lru_redux'
