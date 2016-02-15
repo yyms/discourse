@@ -1,88 +1,137 @@
 require_dependency 'pinned_check'
+require_dependency 'new_post_manager'
 
 class TopicViewSerializer < ApplicationSerializer
+  include PostStreamSerializerMixin
 
-  # These attributes will be delegated to the topic
-  def self.topic_attributes
-    [:id,
-     :title,
-     :fancy_title,
-     :posts_count,
-     :created_at,
-     :views,
-     :reply_count,
-     :last_posted_at,
-     :visible,
-     :closed,
-     :archived,
-     :moderator_posts_count,
-     :has_best_of,
-     :archetype,
-     :slug,
-     :auto_close_at]
+  def self.attributes_from_topic(*list)
+    [list].flatten.each do |attribute|
+      attributes(attribute)
+      class_eval %{def #{attribute}
+        object.topic.#{attribute}
+      end}
+    end
   end
 
-  def self.guardian_attributes
-    [:can_moderate, :can_edit, :can_delete, :can_invite_to, :can_move_posts]
-  end
-
-  attributes *topic_attributes
-  attributes *guardian_attributes
+  attributes_from_topic :id,
+                        :title,
+                        :fancy_title,
+                        :posts_count,
+                        :created_at,
+                        :views,
+                        :reply_count,
+                        :participant_count,
+                        :like_count,
+                        :last_posted_at,
+                        :visible,
+                        :closed,
+                        :archived,
+                        :has_summary,
+                        :archetype,
+                        :slug,
+                        :category_id,
+                        :word_count,
+                        :deleted_at,
+                        :pending_posts_count,
+                        :user_id
 
   attributes :draft,
              :draft_key,
              :draft_sequence,
-             :post_action_visibility,
-             :voted_in_topic,
-             :can_create_post,
-             :can_reply_as_new_topic,
-             :categoryName,
-             :starred,
-             :last_read_post_number,
              :posted,
-             :notification_level,
-             :notifications_reason_id,
-             :posts,
-             :at_bottom,
+             :unpinned,
+             :pinned_globally,
+             :pinned,    # Is topic pinned and viewer hasn't cleared the pin?
+             :pinned_at, # Ignores clear pin
+             :pinned_until,
+             :details,
              :highest_post_number,
-             :pinned,
-             :filtered_posts_count
+             :last_read_post_number,
+             :deleted_by,
+             :has_deleted,
+             :actions_summary,
+             :expandable_first_post,
+             :is_warning,
+             :chunk_size,
+             :bookmarked,
+             :message_archived
 
-  has_one :created_by, serializer: BasicUserSerializer, embed: :objects
-  has_one :last_poster, serializer: BasicUserSerializer, embed: :objects
-  has_many :allowed_users, serializer: BasicUserSerializer, embed: :objects
-  has_many :allowed_groups, serializer: BasicGroupSerializer, embed: :objects
+  # TODO: Split off into proper object / serializer
+  def details
+    result = {
+      auto_close_at: object.topic.auto_close_at,
+      auto_close_hours: object.topic.auto_close_hours,
+      auto_close_based_on_last_post: object.topic.auto_close_based_on_last_post,
+      created_by: BasicUserSerializer.new(object.topic.user, scope: scope, root: false),
+      last_poster: BasicUserSerializer.new(object.topic.last_poster, scope: scope, root: false)
+    }
 
-  has_many :links, serializer: TopicLinkSerializer, embed: :objects
-  has_many :participants, serializer: TopicPostCountSerializer, embed: :objects
-  has_many :suggested_topics, serializer: SuggestedTopicSerializer, embed: :objects
+    if object.topic.private_message?
+      allowed_user_ids = Set.new
 
-  # Define a delegator for each attribute of the topic we want
-  topic_attributes.each do |ta|
-    class_eval %{def #{ta}
-      object.topic.#{ta}
-    end}
+      result[:allowed_groups] = object.topic.allowed_groups.map do |group|
+        allowed_user_ids.merge(GroupUser.where(group: group).pluck(:user_id))
+        BasicGroupSerializer.new(group, scope: scope, root: false)
+      end
+
+      result[:allowed_users] = object.topic.allowed_users.select do |user|
+        !allowed_user_ids.include?(user.id)
+      end.map do |user|
+        BasicUserSerializer.new(user, scope: scope, root: false)
+      end
+    end
+
+    if object.post_counts_by_user.present?
+      result[:participants] = object.post_counts_by_user.map do |pc|
+        TopicPostCountSerializer.new({user: object.participants[pc[0]], post_count: pc[1]}, scope: scope, root: false)
+      end
+    end
+
+    if object.suggested_topics.try(:topics).present?
+      result[:suggested_topics] = object.suggested_topics.topics.map do |topic|
+        SuggestedTopicSerializer.new(topic, scope: scope, root: false)
+      end
+    end
+
+    if object.links.present?
+      result[:links] = object.links.map do |user|
+        TopicLinkSerializer.new(user, scope: scope, root: false)
+      end
+    end
+
+    if has_topic_user?
+      result[:notification_level] = object.topic_user.notification_level
+      result[:notifications_reason_id] = object.topic_user.notifications_reason_id
+    else
+      result[:notification_level] = TopicUser.notification_levels[:regular]
+    end
+
+    result[:can_move_posts] = true if scope.can_move_posts?(object.topic)
+    result[:can_edit] = true if scope.can_edit?(object.topic)
+    result[:can_delete] = true if scope.can_delete?(object.topic)
+    result[:can_recover] = true if scope.can_recover_topic?(object.topic)
+    result[:can_remove_allowed_users] = true if scope.can_remove_allowed_users?(object.topic)
+    result[:can_invite_to] = true if scope.can_invite_to?(object.topic)
+    result[:can_create_post] = true if scope.can_create?(Post, object.topic)
+    result[:can_reply_as_new_topic] = true if scope.can_reply_as_new_topic?(object.topic)
+    result[:can_flag_topic] = actions_summary.any? { |a| a[:can_act] }
+    result
   end
 
-  # Define the guardian attributes
-  guardian_attributes.each do |ga|
-    class_eval %{
-      def #{ga}
-        true
-      end
+  def chunk_size
+    object.chunk_size
+  end
 
-      def include_#{ga}?
-        scope.#{ga}?(object.topic)
-      end
-    }
+  def is_warning
+    object.topic.private_message? && object.topic.subtype == TopicSubtype.moderator_warning
+  end
+
+  def include_is_warning?
+    is_warning
   end
 
   def draft
     object.draft
-  end
-
-  def include_allowed_users?
-    object.topic.private_message?
   end
 
   def draft_key
@@ -93,44 +142,16 @@ class TopicViewSerializer < ApplicationSerializer
     object.draft_sequence
   end
 
-  def post_action_visibility
-    object.post_action_visibility
+  def include_message_archived?
+    object.topic.private_message?
   end
 
-  def include_post_action_visibility?
-    object.post_action_visibility.present?
+  def message_archived
+    object.topic.message_archived?(scope.user)
   end
 
-  def filtered_posts_count
-    object.filtered_posts_count
-  end
-
-  def voted_in_topic
-    object.voted_in_topic?
-  end
-
-  def can_reply_as_new_topic
-    true
-  end
-
-  def include_can_reply_as_new_topic?
-    scope.can_reply_as_new_topic?(object.topic)
-  end
-
-  def can_create_post
-    true
-  end
-
-  def include_can_create_post?
-    scope.can_create?(Post, object.topic)
-  end
-
-  def categoryName
-    object.topic.category.name
-  end
-
-  def include_categoryName?
-    object.topic.category.present?
+  def deleted_by
+    BasicUserSerializer.new(object.topic.deleted_by, root: false).as_json
   end
 
   # Topic user stuff
@@ -138,10 +159,9 @@ class TopicViewSerializer < ApplicationSerializer
     object.topic_user.present?
   end
 
-  def starred
-    object.topic_user.starred?
+  def highest_post_number
+    object.highest_post_number
   end
-  alias_method :include_starred?, :has_topic_user?
 
   def last_read_post_number
     object.topic_user.last_read_post_number
@@ -153,90 +173,61 @@ class TopicViewSerializer < ApplicationSerializer
   end
   alias_method :include_posted?, :has_topic_user?
 
-  def notification_level
-    object.topic_user.notification_level
-  end
-  alias_method :include_notification_level?, :has_topic_user?
-
-  def notifications_reason_id
-    object.topic_user.notifications_reason_id
-  end
-  alias_method :include_notifications_reason_id?, :has_topic_user?
-
-  def created_by
-    object.topic.user
-  end
-
-  def last_poster
-    object.topic.last_poster
-  end
-
-  def allowed_users
-    object.topic.allowed_users
-  end
-
-  def allowed_groups
-    object.topic.allowed_groups
-  end
-
-  def include_links?
-    object.links.present?
-  end
-
-  def participants
-    object.post_counts_by_user.collect {|tuple| {user: object.participants[tuple.first], post_count: tuple[1]}}
-  end
-
-  def include_participants?
-    object.initial_load? && object.post_counts_by_user.present?
-  end
-
-  def suggested_topics
-    object.suggested_topics.topics
-  end
-  def include_suggested_topics?
-    at_bottom && object.suggested_topics.present?
-  end
-
-  # Whether we're at the bottom of a topic (last page)
-  def at_bottom
-    posts.present? && (@highest_number_in_posts == object.highest_post_number)
-  end
-
-  def highest_post_number
-    object.highest_post_number
+  def pinned_globally
+    object.topic.pinned_globally
   end
 
   def pinned
-    PinnedCheck.new(object.topic, object.topic_user).pinned?
+    PinnedCheck.pinned?(object.topic, object.topic_user)
   end
 
-  def posts
-    return @posts if @posts.present?
-    @posts = []
-    @highest_number_in_posts = 0
-    if object.posts.present?
-      object.posts.each_with_index do |p, idx|
-        if p.user
-          @highest_number_in_posts = p.post_number if p.post_number > @highest_number_in_posts
-          ps = PostSerializer.new(p, scope: scope, root: false)
-          ps.topic_slug = object.topic.slug
-          ps.topic_view = object
-          p.topic = object.topic
+  def unpinned
+    PinnedCheck.unpinned?(object.topic, object.topic_user)
+  end
 
-          post_json = ps.as_json
+  def pinned_at
+    object.topic.pinned_at
+  end
 
-          if object.index_reverse
-            post_json[:index] = object.index_offset - idx
-          else
-            post_json[:index] = object.index_offset + idx + 1
-          end
+  def pinned_until
+    object.topic.pinned_until
+  end
 
-          @posts << post_json
-        end
-      end
+  def actions_summary
+    result = []
+    return [] unless post = object.posts.try(:first)
+    PostActionType.topic_flag_types.each do |sym, id|
+      result << { id: id,
+                  count: 0,
+                  hidden: false,
+                  can_act: scope.post_can_act?(post, sym)}
+      # TODO: other keys? :can_defer_flags, :acted, :can_undo
     end
-    @posts
+    result
+  end
+
+  def has_deleted
+    object.has_deleted?
+  end
+
+  def include_has_deleted?
+    object.guardian.can_see_deleted_posts?
+  end
+
+  def expandable_first_post
+    true
+  end
+
+  def include_expandable_first_post?
+    object.topic.expandable_first_post?
+  end
+
+  def bookmarked
+    object.topic_user.try(:bookmarked)
+  end
+
+  def include_pending_posts_count?
+    scope.is_staff? && NewPostManager.queue_enabled?
   end
 
 end

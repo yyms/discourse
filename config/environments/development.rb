@@ -7,7 +7,7 @@ Discourse::Application.configure do
   config.cache_classes = false
 
   # Log error messages when you accidentally call methods on nil.
-  config.whiny_nils = true
+  config.eager_load = false
 
   # Show full error reports and disable caching
   config.consider_all_requests_local       = true
@@ -16,32 +16,39 @@ Discourse::Application.configure do
   # Print deprecation notices to the Rails logger
   config.active_support.deprecation = :log
 
-  # Only use best-standards-support built into browsers
-  config.action_dispatch.best_standards_support = :builtin
-
   # Do not compress assets
   config.assets.compress = false
 
   # Don't Digest assets, makes debugging uglier
   config.assets.digest = false
 
-  config.assets.debug = true
+  config.assets.debug = false
 
+  # Raise an error on page load if there are pending migrations
+  config.active_record.migration_error = :page_load
   config.watchable_dirs['lib'] = [:rb]
 
   config.sass.debug_info = false
   config.handlebars.precompile = false
 
   # we recommend you use mailcatcher https://github.com/sj26/mailcatcher
-  config.action_mailer.delivery_method = :smtp
   config.action_mailer.smtp_settings = { address: "localhost", port: 1025 }
+
   config.action_mailer.raise_delivery_errors = true
 
   BetterErrors::Middleware.allow_ip! ENV['TRUSTED_IP'] if ENV['TRUSTED_IP']
 
-  config.enable_mini_profiler = true
+  config.load_mini_profiler = true
 
   require 'middleware/turbo_dev'
   config.middleware.insert 0, Middleware::TurboDev
-end
+  require 'middleware/missing_avatars'
+  config.middleware.insert 1, Middleware::MissingAvatars
 
+  config.enable_anon_caching = false
+  require 'rbtrace'
+
+  if emails = GlobalSetting.developer_emails
+    config.developer_emails = emails.split(",").map(&:strip)
+  end
+end

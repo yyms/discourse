@@ -1,66 +1,66 @@
-require_dependency 'pinned_check'
-
 class TopicListItemSerializer < ListableTopicSerializer
 
   attributes :views,
              :like_count,
-             :visible,
-             :pinned,
-             :closed,
-             :archived,
-             :starred,
-             :has_best_of,
+             :has_summary,
              :archetype,
-             :rank_details,
-             :excerpt
+             :last_poster_username,
+             :category_id,
+             :op_like_count,
+             :pinned_globally,
+             :bookmarked_post_numbers,
+             :liked_post_numbers
 
-  has_one :category, serializer: BasicCategorySerializer
   has_many :posters, serializer: TopicPosterSerializer, embed: :objects
-
-  def starred
-    object.user_data.starred?
-  end
-  alias :include_starred? :seen
-
-
-  # This is for debugging / tweaking the hot topic rankings.
-  # We will likely remove it after we are happier with things.
-  def rank_details
-
-    hot_topic_type = case object.hot_topic.hot_topic_type
-      when 1 then 'sticky'
-      when 2 then 'recent high scoring'
-      when 3 then 'old high scoring'
-    end
-
-    {topic_score: object.score,
-     percent_rank: object.percent_rank,
-     random_bias: object.hot_topic.random_bias,
-     random_multiplier: object.hot_topic.random_multiplier,
-     days_ago_bias: object.hot_topic.days_ago_bias,
-     days_ago_multiplier: object.hot_topic.days_ago_multiplier,
-     ranking_score: object.hot_topic.score,
-     hot_topic_type: hot_topic_type}
-  end
-
-  def include_rank_details?
-    object.topic_list.try(:has_rank_details?)
-  end
+  has_many :participants, serializer: TopicPosterSerializer, embed: :objects
 
   def posters
     object.posters || []
   end
 
-  def pinned
-    PinnedCheck.new(object, object.user_data).pinned?
+  def op_like_count
+    object.first_post && object.first_post.like_count
   end
 
-  def include_excerpt?
-    pinned
+  def last_poster_username
+    posters.find { |poster| poster.user.id == object.last_post_user_id }.try(:user).try(:username)
   end
 
-  def excerpt
-    object.posts.by_post_number.first.try(:excerpt, 220, strip_links: true) || nil
+  def participants
+    object.participants_summary || []
+  end
+
+  def include_bookmarked_post_numbers?
+    include_post_action? :bookmark
+  end
+
+  def include_liked_post_numbers?
+    include_post_action? :like
+  end
+
+  def include_post_action?(action)
+    object.user_data &&
+      object.user_data.post_action_data &&
+      object.user_data.post_action_data.key?(PostActionType.types[action])
+  end
+
+  def liked_post_numbers
+    object.user_data.post_action_data[PostActionType.types[:like]]
+  end
+
+  def bookmarked_post_numbers
+    object.user_data.post_action_data[PostActionType.types[:bookmark]]
+  end
+
+  def include_participants?
+    object.private_message?
+  end
+
+  def include_op_like_count?
+    # PERF: long term we probably want a cheaper way of looking stuff up
+    # this is rather odd code, but we need to have op_likes loaded somehow
+    # simplest optimisation is adding a cache column on topic.
+    object.association(:first_post).loaded?
   end
 
 end

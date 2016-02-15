@@ -1,35 +1,40 @@
 class UserActionsController < ApplicationController
+
   def index
-    requires_parameters(:username)
-    per_chunk = 60
+    params.require(:username)
+    params.permit(:filter, :offset)
 
-    user = fetch_user_from_params
+    per_chunk = 30
 
-    opts = {
-      user_id: user.id,
-      offset: params[:offset].to_i,
-      limit: per_chunk,
-      action_types: (params[:filter] || "").split(",").map(&:to_i),
-      guardian: guardian,
-      ignore_private_messages: params[:filter] ? false : true
-    }
+    user = fetch_user_from_params(include_inactive: current_user.try(:staff?))
 
-    if opts[:action_types] == [UserAction::GOT_PRIVATE_MESSAGE] ||
-       opts[:action_types] == [UserAction::NEW_PRIVATE_MESSAGE]
-      render json: UserAction.private_message_stream(opts[:action_types][0], opts)
+    opts = { user_id: user.id,
+             user: user,
+             offset: params[:offset].to_i,
+             limit: per_chunk,
+             action_types: (params[:filter] || "").split(",").map(&:to_i),
+             guardian: guardian,
+             ignore_private_messages: params[:filter] ? false : true }
+
+    # Pending is restricted
+    stream = if opts[:action_types].include?(UserAction::PENDING)
+      guardian.ensure_can_see_notifications!(user)
+      UserAction.stream_queued(opts)
     else
-      render json: UserAction.stream(opts)
+      UserAction.stream(opts)
     end
+
+    render_serialized(stream, UserActionSerializer, root: 'user_actions')
   end
 
   def show
-    requires_parameters(:id)
-    render json: UserAction.stream_item(params[:id], guardian)
+    params.require(:id)
+    render_serialized(UserAction.stream_item(params[:id], guardian), UserActionSerializer)
   end
 
   def private_messages
-    # todo
+    # DO NOT REMOVE
+    # TODO should preload messages to avoid extra http req
   end
-
 
 end

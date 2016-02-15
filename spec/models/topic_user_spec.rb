@@ -1,34 +1,66 @@
-require 'spec_helper'
+require 'rails_helper'
 
 describe TopicUser do
 
-  it { should belong_to :user }
-  it { should belong_to :topic }
+  describe '#notification_levels' do
+    context "verify enum sequence" do
+      before do
+        @notification_levels = TopicUser.notification_levels
+      end
 
-  let!(:yesterday) { DateTime.now.yesterday }
+      it "'muted' should be at 0 position" do
+        expect(@notification_levels[:muted]).to eq(0)
+      end
 
-  before do
-    DateTime.expects(:now).at_least_once.returns(yesterday)
+      it "'watching' should be at 3rd position" do
+        expect(@notification_levels[:watching]).to eq(3)
+      end
+    end
   end
 
-  let!(:topic) { Fabricate(:topic) }
-  let!(:user) { Fabricate(:coding_horror) }
+  describe '#notification_reasons' do
+    context "verify enum sequence" do
+      before do
+        @notification_reasons = TopicUser.notification_reasons
+      end
+
+      it "'created_topic' should be at 1st position" do
+        expect(@notification_reasons[:created_topic]).to eq(1)
+      end
+
+      it "'plugin_changed' should be at 9th position" do
+        expect(@notification_reasons[:plugin_changed]).to eq(9)
+      end
+    end
+  end
+
+  it { is_expected.to belong_to :user }
+  it { is_expected.to belong_to :topic }
+
+  let(:user) { Fabricate(:user) }
+
+  let(:topic) {
+    u = Fabricate(:user)
+    guardian = Guardian.new(u)
+    TopicCreator.create(u, guardian, title: "this is my topic title")
+  }
   let(:topic_user) { TopicUser.get(topic,user) }
   let(:topic_creator_user) { TopicUser.get(topic, topic.user) }
 
   let(:post) { Fabricate(:post, topic: topic, user: user) }
   let(:new_user) { Fabricate(:user, auto_track_topics_after_msecs: 1000) }
   let(:topic_new_user) { TopicUser.get(topic, new_user)}
+  let(:yesterday) { DateTime.now.yesterday }
 
+  def ensure_topic_user
+    TopicUser.change(user, topic, last_emailed_post_number: 1)
+  end
 
   describe "unpinned" do
 
-    before do
-      TopicUser.change(user, topic, {starred_at: yesterday})
-    end
-
     it "defaults to blank" do
-      topic_user.cleared_pinned_at.should be_blank
+      ensure_topic_user
+      expect(topic_user.cleared_pinned_at).to be_blank
     end
 
   end
@@ -37,51 +69,51 @@ describe TopicUser do
 
     it 'should be set to tracking if auto_track_topics is enabled' do
       user.update_column(:auto_track_topics_after_msecs, 0)
-      TopicUser.change(user, topic, {starred_at: yesterday})
-      TopicUser.get(topic, user).notification_level.should == TopicUser.notification_levels[:tracking]
+      ensure_topic_user
+      expect(TopicUser.get(topic, user).notification_level).to eq(TopicUser.notification_levels[:tracking])
     end
 
     it 'should reset regular topics to tracking topics if auto track is changed' do
-      TopicUser.change(user, topic, {starred_at: yesterday})
+      ensure_topic_user
       user.auto_track_topics_after_msecs = 0
       user.save
-      topic_user.notification_level.should == TopicUser.notification_levels[:tracking]
+      expect(topic_user.notification_level).to eq(TopicUser.notification_levels[:tracking])
     end
 
     it 'should be set to "regular" notifications, by default on non creators' do
-      TopicUser.change(user, topic, {starred_at: yesterday})
-      TopicUser.get(topic,user).notification_level.should == TopicUser.notification_levels[:regular]
+      ensure_topic_user
+      expect(TopicUser.get(topic,user).notification_level).to eq(TopicUser.notification_levels[:regular])
     end
 
     it 'reason should reset when changed' do
       topic.notify_muted!(topic.user)
-      TopicUser.get(topic,topic.user).notifications_reason_id.should == TopicUser.notification_reasons[:user_changed]
+      expect(TopicUser.get(topic,topic.user).notifications_reason_id).to eq(TopicUser.notification_reasons[:user_changed])
     end
 
     it 'should have the correct reason for a user change when watched' do
       topic.notify_watch!(user)
-      topic_user.notification_level.should == TopicUser.notification_levels[:watching]
-      topic_user.notifications_reason_id.should == TopicUser.notification_reasons[:user_changed]
-      topic_user.notifications_changed_at.should_not be_nil
+      expect(topic_user.notification_level).to eq(TopicUser.notification_levels[:watching])
+      expect(topic_user.notifications_reason_id).to eq(TopicUser.notification_reasons[:user_changed])
+      expect(topic_user.notifications_changed_at).not_to eq(nil)
     end
 
     it 'should have the correct reason for a user change when set to regular' do
       topic.notify_regular!(user)
-      topic_user.notification_level.should == TopicUser.notification_levels[:regular]
-      topic_user.notifications_reason_id.should == TopicUser.notification_reasons[:user_changed]
-      topic_user.notifications_changed_at.should_not be_nil
+      expect(topic_user.notification_level).to eq(TopicUser.notification_levels[:regular])
+      expect(topic_user.notifications_reason_id).to eq(TopicUser.notification_reasons[:user_changed])
+      expect(topic_user.notifications_changed_at).not_to eq(nil)
     end
 
     it 'should have the correct reason for a user change when set to regular' do
       topic.notify_muted!(user)
-      topic_user.notification_level.should == TopicUser.notification_levels[:muted]
-      topic_user.notifications_reason_id.should == TopicUser.notification_reasons[:user_changed]
-      topic_user.notifications_changed_at.should_not be_nil
+      expect(topic_user.notification_level).to eq(TopicUser.notification_levels[:muted])
+      expect(topic_user.notifications_reason_id).to eq(TopicUser.notification_reasons[:user_changed])
+      expect(topic_user.notifications_changed_at).not_to eq(nil)
     end
 
     it 'should watch topics a user created' do
-      topic_creator_user.notification_level.should == TopicUser.notification_levels[:watching]
-      topic_creator_user.notifications_reason_id.should == TopicUser.notification_reasons[:created_topic]
+      expect(topic_creator_user.notification_level).to eq(TopicUser.notification_levels[:watching])
+      expect(topic_creator_user.notifications_reason_id).to eq(TopicUser.notification_reasons[:created_topic])
     end
   end
 
@@ -92,19 +124,22 @@ describe TopicUser do
     end
 
     it 'set upon initial visit' do
-      topic_user.first_visited_at.to_i.should == yesterday.to_i
-      topic_user.last_visited_at.to_i.should == yesterday.to_i
+      freeze_time yesterday do
+        expect(topic_user.first_visited_at.to_i).to eq(yesterday.to_i)
+        expect(topic_user.last_visited_at.to_i).to eq(yesterday.to_i)
+      end
     end
 
     it 'updates upon repeat visit' do
       today = yesterday.tomorrow
-      DateTime.expects(:now).returns(today)
 
-      TopicUser.track_visit!(topic,user)
-      # reload is a no go
-      topic_user = TopicUser.get(topic,user)
-      topic_user.first_visited_at.to_i.should == yesterday.to_i
-      topic_user.last_visited_at.to_i.should == today.to_i
+      freeze_time today do
+        TopicUser.track_visit!(topic,user)
+        # reload is a no go
+        topic_user = TopicUser.get(topic,user)
+        expect(topic_user.first_visited_at.to_i).to eq(yesterday.to_i)
+        expect(topic_user.last_visited_at.to_i).to eq(today.to_i)
+      end
     end
 
     it 'triggers the observer callbacks when updating' do
@@ -124,18 +159,34 @@ describe TopicUser do
       let(:topic_user) { TopicUser.get(topic,user) }
 
       it 'should create a new record for a visit' do
-        topic_user.last_read_post_number.should == 1
-        topic_user.last_visited_at.to_i.should == yesterday.to_i
-        topic_user.first_visited_at.to_i.should == yesterday.to_i
+        freeze_time yesterday do
+          expect(topic_user.last_read_post_number).to eq(1)
+          expect(topic_user.last_visited_at.to_i).to eq(yesterday.to_i)
+          expect(topic_user.first_visited_at.to_i).to eq(yesterday.to_i)
+        end
       end
 
       it 'should update the record for repeat visit' do
-        Fabricate(:post, topic: topic, user: user)
-        TopicUser.update_last_read(user, topic.id, 2, 0)
-        topic_user = TopicUser.get(topic,user)
-        topic_user.last_read_post_number.should == 2
-        topic_user.last_visited_at.to_i.should == yesterday.to_i
-        topic_user.first_visited_at.to_i.should == yesterday.to_i
+        freeze_time yesterday do
+          Fabricate(:post, topic: topic, user: user)
+          TopicUser.update_last_read(user, topic.id, 2, 0)
+          topic_user = TopicUser.get(topic,user)
+          expect(topic_user.last_read_post_number).to eq(2)
+          expect(topic_user.last_visited_at.to_i).to eq(yesterday.to_i)
+          expect(topic_user.first_visited_at.to_i).to eq(yesterday.to_i)
+        end
+      end
+    end
+
+    context 'private messages' do
+      it 'should ensure recepients and senders are watching' do
+        ActiveRecord::Base.observers.enable :all
+
+        target_user = Fabricate(:user)
+        post = create_post(archetype: Archetype.private_message, target_usernames: target_user.username);
+
+        expect(TopicUser.get(post.topic, post.user).notification_level).to eq(TopicUser.notification_levels[:watching])
+        expect(TopicUser.get(post.topic, target_user).notification_level).to eq(TopicUser.notification_levels[:watching])
       end
     end
 
@@ -149,79 +200,76 @@ describe TopicUser do
 
       it 'should automatically track topics you reply to' do
         post_creator.create
-        topic_new_user.notification_level.should == TopicUser.notification_levels[:tracking]
-        topic_new_user.notifications_reason_id.should == TopicUser.notification_reasons[:created_post]
+        expect(topic_new_user.notification_level).to eq(TopicUser.notification_levels[:tracking])
+        expect(topic_new_user.notifications_reason_id).to eq(TopicUser.notification_reasons[:created_post])
       end
 
       it 'should not automatically track topics you reply to and have set state manually' do
         post_creator.create
         TopicUser.change(new_user, topic, notification_level: TopicUser.notification_levels[:regular])
-        topic_new_user.notification_level.should == TopicUser.notification_levels[:regular]
-        topic_new_user.notifications_reason_id.should == TopicUser.notification_reasons[:user_changed]
+        expect(topic_new_user.notification_level).to eq(TopicUser.notification_levels[:regular])
+        expect(topic_new_user.notifications_reason_id).to eq(TopicUser.notification_reasons[:user_changed])
       end
 
       it 'should automatically track topics after they are read for long enough' do
-        topic_new_user.notification_level.should ==TopicUser.notification_levels[:regular]
-        TopicUser.update_last_read(new_user, topic.id, 2, 1001)
-        TopicUser.get(topic, new_user).notification_level.should == TopicUser.notification_levels[:tracking]
+        expect(topic_new_user.notification_level).to eq(TopicUser.notification_levels[:regular])
+        TopicUser.update_last_read(new_user, topic.id, 2, SiteSetting.default_other_auto_track_topics_after_msecs + 1)
+        expect(TopicUser.get(topic, new_user).notification_level).to eq(TopicUser.notification_levels[:tracking])
       end
 
       it 'should not automatically track topics after they are read for long enough if changed manually' do
         TopicUser.change(new_user, topic, notification_level: TopicUser.notification_levels[:regular])
-        TopicUser.update_last_read(new_user, topic, 2, 1001)
-        topic_new_user.notification_level.should == TopicUser.notification_levels[:regular]
+        TopicUser.update_last_read(new_user, topic, 2, SiteSetting.default_other_auto_track_topics_after_msecs + 1)
+        expect(topic_new_user.notification_level).to eq(TopicUser.notification_levels[:regular])
       end
     end
   end
 
   describe 'change a flag' do
 
-    it 'creates a forum topic user record' do
-      lambda {
-        TopicUser.change(user, topic.id, starred: true)
-      }.should change(TopicUser, :count).by(1)
-    end
-
     it "only inserts a row once, even on repeated calls" do
-      lambda {
-        TopicUser.change(user, topic.id, starred: true)
-        TopicUser.change(user, topic.id, starred: false)
-        TopicUser.change(user, topic.id, starred: true)
-      }.should change(TopicUser, :count).by(1)
-    end
 
-    it 'triggers the observer callbacks when updating' do
-      UserActionObserver.instance.expects(:after_save).twice
-      3.times { TopicUser.change(user, topic.id, starred: true) }
+      topic; user
+
+      expect {
+        TopicUser.change(user, topic.id, total_msecs_viewed: 1)
+        TopicUser.change(user, topic.id, total_msecs_viewed: 2)
+        TopicUser.change(user, topic.id, total_msecs_viewed: 3)
+      }.to change(TopicUser, :count).by(1)
     end
 
     describe 'after creating a row' do
       before do
-        TopicUser.change(user, topic.id, starred: true)
-      end
-
-      it 'has the correct starred value' do
-        TopicUser.get(topic, user).should be_starred
+        ensure_topic_user
       end
 
       it 'has a lookup' do
-        TopicUser.lookup_for(user, [topic]).should be_present
+        expect(TopicUser.lookup_for(user, [topic])).to be_present
       end
 
       it 'has a key in the lookup for this forum topic' do
-        TopicUser.lookup_for(user, [topic]).has_key?(topic.id).should be_true
+        expect(TopicUser.lookup_for(user, [topic]).has_key?(topic.id)).to eq(true)
       end
 
     end
 
   end
 
+  it "can scope by tracking" do
+    TopicUser.create!(user_id: 1, topic_id: 1, notification_level: TopicUser.notification_levels[:tracking])
+    TopicUser.create!(user_id: 2, topic_id: 1, notification_level: TopicUser.notification_levels[:watching])
+    TopicUser.create!(user_id: 3, topic_id: 1, notification_level: TopicUser.notification_levels[:regular])
+
+    expect(TopicUser.tracking(1).count).to eq(2)
+    expect(TopicUser.tracking(10).count).to eq(0)
+  end
 
   it "is able to self heal" do
     p1 = Fabricate(:post)
     p2 = Fabricate(:post, user: p1.user, topic: p1.topic, post_number: 2)
+    p1.topic.notifier.watch_topic!(p1.user_id)
 
-    TopicUser.exec_sql("UPDATE topic_users set seen_post_count=100, last_read_post_number=0
+    TopicUser.exec_sql("UPDATE topic_users set highest_seen_post_number=1, last_read_post_number=0
                        WHERE topic_id = :topic_id AND user_id = :user_id", topic_id: p1.topic_id, user_id: p1.user_id)
 
     [p1,p2].each do |p|
@@ -230,9 +278,37 @@ describe TopicUser do
 
     TopicUser.ensure_consistency!
 
-    tu = TopicUser.where(user_id: p1.user_id, topic_id: p1.topic_id).first
-    tu.last_read_post_number.should == p2.post_number
-    tu.seen_post_count.should == 2
+    tu = TopicUser.find_by(user_id: p1.user_id, topic_id: p1.topic_id)
+    expect(tu.last_read_post_number).to eq(p2.post_number)
+    expect(tu.highest_seen_post_number).to eq(2)
+
+  end
+
+  describe "mailing_list_mode" do
+
+    it "will receive email notification for every topic" do
+      user1 = Fabricate(:user)
+
+      SiteSetting.stubs(:default_email_mailing_list_mode).returns(true)
+
+      user2 = Fabricate(:user)
+      post = create_post
+
+      user3 = Fabricate(:user)
+      create_post(topic_id: post.topic_id)
+
+      # mails posts from earlier topics
+      tu = TopicUser.find_by(user_id: user3.id, topic_id: post.topic_id)
+      expect(tu.last_emailed_post_number).to eq(2)
+
+      # mails nothing to random users
+      tu = TopicUser.find_by(user_id: user1.id, topic_id: post.topic_id)
+      expect(tu).to eq(nil)
+
+      # mails other user
+      tu = TopicUser.find_by(user_id: user2.id, topic_id: post.topic_id)
+      expect(tu.last_emailed_post_number).to eq(2)
+    end
   end
 
 end

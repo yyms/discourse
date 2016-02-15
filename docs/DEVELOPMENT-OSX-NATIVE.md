@@ -1,16 +1,34 @@
 # Developing under OS X Without Vagrant
 
-These instructions assume you have read and understood the **[Discourse Advanced Developer Install Guide](https://github.com/discourse/discourse/blob/master/docs/DEVELOPER-ADVANCED.md)**. 
+These instructions assume you have read and understood the **[Discourse Advanced Developer Install Guide](DEVELOPER-ADVANCED.md)**.
 
 OS X has become a popular platform for developing Ruby on Rails applications; as such, if you run OS X, you might find it more congenial to work on **[Discourse](http://discourse.org)** in your native environment. These instructions should get you there.
 
 Obviously, if you **already** develop Ruby on OS X, a lot of this will be redundant, because you'll have already done it, or something like it. If that's the case, you may well be able to just install Ruby 2.0 using RVM and get started! Discourse has enough dependencies, however (note: not a criticism!) that there's a good chance you'll find **something** else in this document that's useful for getting your Discourse development started!
 
-## Unicode
+## Quick Setup
 
-OS X 10.8 uses Unicode by default. You can, of course, double-check this by examining LANG, which appears to be the only relevant environment variable.
+If you don't already have a Ruby environment that's tuned to your liking, you can do most of this set up in just a few steps:
 
-## OSX Development Tools
+1. Install XCode and/or the XCode Command Line Tools from [Apple's developer site](https://developer.apple.com/downloads/index.action). This should also install Git.
+2. Clone the Discourse repo and cd into it.
+3. Run `script/osx_dev`.
+4. Review `log/osx_dev.log` to make sure everything finished successfully.
+
+Of course, it is good to understand what the script is doing and why. The rest of this guide goes through what's happening.
+
+## UTF-8
+
+OS X 10.8 uses UTF-8 by default. You can, of course, double-check this by examining LANG, which appears to be the only relevant environment variable.
+
+You should see this:
+
+```sh
+$ echo $LANG
+en_US.UTF-8
+```
+
+## OS X Development Tools
 
 As the [RVM website](http://rvm.io) makes clear, there are some serious issues between MRI Ruby and the modern Xcode command line tools, which are based on CLANG and LLVM, rather than classic GCC.
 
@@ -44,8 +62,6 @@ If you don't have RVM installed, the "official" install command line on rvm.io w
 
     curl -L https://get.rvm.io | bash -s stable --rails --autolibs=enabled
 
-**IMPORTANT** As of this writing, there is a known bug in rubygems that will make it appear to not properly install. It's fibbing. It installs just fine.
-
 ### Updating RVM
 
 If you do already have RVM installed, this should make sure everything is up to date for what you'll need.
@@ -71,28 +87,66 @@ Either way, you'll now want to install the 'turbo' version of Ruby 2.0.
 
 OS X comes with Git (which is why the LibXML2 dance above will work before this step!), but I recommend you update to Homebrew's version:
 
-    brew install git # 1.8.2 is current
+    brew install git
 
 You should now be able to check out a clone of Discourse.
 
 ### SourceTree
 
-Atlassan has a free GIT client for OS X called [SourceTree](http://www.sourcetreeapp.com/download/) which can be extremely useful for keeping visual track of what's going on in Git-land. While it's arguably not a full substitute for command-line git (especially if you know the command line well), it's extremely powerful for a GUI version-control client.
+Atlassian has a free Git client for OS X called [SourceTree](http://www.sourcetreeapp.com/download/) which can be extremely useful for keeping visual track of what's going on in Git-land. While it's arguably not a full substitute for command-line git (especially if you know the command line well), it's extremely powerful for a GUI version-control client.
 
-## Postgres 9.2
+## Postgres 9.3
 
-**NOTA BENE** As I'm writing this, Postgres is known to have some sort of hideous security problem that is supposed to be patched Real Soon Now. Be careful!
+OS X ships with Postgres 9.1.5, but you're better off going with the latest from Homebrew or [Postgres.app](http://postgresapp.com).
 
-OS X ships with Postgres 9.1.5, but you're better off going with the latest from Homebrew or [Postgres.App](http://postgresapp.com).
+### Using Postgres.app
 
-### Using Postgress.app
+After installing [Postgres.app](http://postgresapp.com/), there are some additional setup steps that are necessary for discourse to create a database on your machine.
 
-[Instructions pending]
+Open this file:
+```
+~/Library/Application Support/Postgres/var-9.3/postgresql.conf
+```
+And change these two lines so that postgres will create a socket in the folder discourse expects it to:
+```
+unix_socket_directories = '/var/pgsql_socket'   # comma-separated list of directories
+#and
+unix_socket_permissions = 0777  # begin with 0 to use octal notation
+```
+Then create the '/var/pgsql/' folder and set up the appropriate permission in your bash (this requires admin access)
+```
+sudo mkdir /var/pgsql_socket
+sudo chmod 770 /var/pgsql_socket
+sudo chown root:staff /var/pgsql_socket
+```
+Now you can restart Postgres.app and it will use this socket. Make sure you not only restart the app but kill any processes that may be left behind. You can view these processes with this bash command:
+```
+netstat -ln | grep PGSQL
+```
+And you should be good to go!
+
+#### Troubleshooting
+
+If you get this error when starting `psql` from the command line:
+
+    psql: could not connect to server: No such file or directory
+    Is the server running locally and accepting
+    connections on Unix domain socket "/tmp/.s.PGSQL.5432"?
+    
+it is because it is still looking in the `/tmp` directory and not in `/var/pgsql_socket`.
+
+If running `psql -h /var/pgsql_socket` works then you need to configure the host in your `.bash_profile`:
+
+```
+export PGHOST="/var/pgsql_socket"
+````
+
+Then make sure to reload your config with: `source ~/.bash_profile`. Now `psql` should work.
 
 
 ### Using Homebrew:
 
-Whereas Ubuntu installs postgres with 'postgres' as the default superuser, Homebrew installs it with the user who installed it as such...and yet with 'postgres' as the default database. Go figure. 
+Whereas Ubuntu installs postgres with 'postgres' as the default superuser, Homebrew installs it with the user who installed it... but with 'postgres' as the default database. Go figure.
 
 However, the seed data currently has some dependencies on their being a 'postgres' user, so we create one below.
 
@@ -106,7 +160,8 @@ In theory, you're not setting up with vagrant, either, and shouldn't need a vagr
     launchctl unload ~/Library/LaunchAgents/homebrew.mxcl.postgresql.plist
     launchctl load ~/Library/LaunchAgents/homebrew.mxcl.postgresql.plist
 
-    # Seed data relies on both 'postgres' and 'vagrant'
+### Seed data relies on both 'postgres' and 'vagrant'
+    
     createuser --createdb --superuser postgres
     createuser --createdb --superuser vagrant
 
@@ -117,12 +172,6 @@ In theory, you're not setting up with vagrant, either, and shouldn't need a vagr
     psql -d discourse_development -c "CREATE EXTENSION pg_trgm;"
 
 You should not need to alter `/usr/local/var/postgres/pg_hba.conf`
-
-### Loading seed data
-
-From the discource source tree:
-    
-    psql -d discourse_development < pg_dumps/development-image.sql
 
 ## Redis
 
@@ -138,13 +187,57 @@ Homebrew loves you.
 
     brew install phantomjs
 
-## Now, test it out!
+## ImageMagick
 
-Copy `config/database.yml.sample` and `config/redis.yml.sample` to `config/database.yml` and `config/redis.yml` and input the correct values to point to your postgres and redis instances. If you stuck to all the defaults above, chances are the samples will work out of the box!
+ImageMagick is used for generating avatars (including for test fixtures).
+
+    brew install imagemagick
+
+## Sending email (SMTP)
+
+By default, development.rb will attempt to connect locally to send email.
+
+```rb
+config.action_mailer.smtp_settings = { address: "localhost", port: 1025 }
+```
+
+Set up [MailCatcher](https://github.com/sj26/mailcatcher) so the app can intercept
+outbound email and you can verify what is being sent.
+
+## Setting up your Discourse
+
+###  Check out the repository
+
+    git@github.com:discourse/discourse.git ~/discourse
+    cd ~/discourse # Navigate into the repository, and stay there for the rest of this how-to
+
+### What about the config files?
+
+If you've stuck to all the defaults above, the default `discourse.conf` and `redis.conf` should work out of the box.
+
+### Install the needed gems
 
     bundle install # Yes, this DOES take a while. No, it's not really cloning all of rubygems :-)
+
+### Prepare your database
+
     rake db:migrate
     rake db:test:prepare
     rake db:seed_fu
-    bundle exec rspec # All specs should pass
 
+## Now, test it out!
+
+    bundle exec rspec
+
+All specs should pass
+
+### Deal with any problems which arise.
+
+Reset the environment as a possible solution to failed rspec tests.
+These commands assume an empty Discourse database, and an otherwise empty redis environment. CAREFUL HERE
+
+    RAILS_ENV=test rake db:drop db:create db:migrate
+    redis-cli flushall
+    bundle exec rspec # re-running to see if tests pass
+
+Search http://meta.discourse.org for solutions to other problems.

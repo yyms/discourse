@@ -1,35 +1,30 @@
 class AvatarLookup
 
-  def initialize(user_ids)
-    @user_ids = user_ids
-
-    @user_ids.flatten!
-    @user_ids.compact! if @user_ids.present?
-    @user_ids.uniq! if @user_ids.present?
-
-    @loaded = false
+  def initialize(user_ids=[])
+    @user_ids = user_ids.tap(&:compact!).tap(&:uniq!).tap(&:flatten!)
   end
 
   # Lookup a user by id
   def [](user_id)
-    ensure_loaded!
-    @users_hashed[user_id]
+    users[user_id]
   end
 
+  private
 
-  protected
+  def self.lookup_columns
+    @lookup_columns ||= %i{id email username uploaded_avatar_id}
+  end
 
-    def ensure_loaded!
-      return if @loaded
+  def users
+    @users ||= user_lookup_hash
+  end
 
-      @users_hashed = {}
-      # need email for hash
-      User.where(id: @user_ids).select([:id, :email, :email, :username]).each do |u|
-        @users_hashed[u.id] = u
-      end
-
-      @loaded = true
-    end
-
-
+  def user_lookup_hash
+    # adding tap here is a personal taste thing
+    hash = {}
+    User.where(:id => @user_ids)
+        .select(AvatarLookup.lookup_columns)
+        .each{ |user| hash[user.id] = user }
+    hash
+  end
 end

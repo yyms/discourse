@@ -28,18 +28,26 @@ class TextCleaner
     text.gsub!(/\?+/, '?') if opts[:deduplicate_question_marks]
     # Replace all-caps text with regular case letters
     text.tr!('A-Z', 'a-z') if opts[:replace_all_upper_case] && (text =~ /[A-Z]+/) && (text == text.upcase)
-    # Capitalize first letter
-    text.sub!(/\A([a-z])/) { |first| first.capitalize } if opts[:capitalize_first_letter]
+    # Capitalize first letter, but only when entire first word is lowercase
+    text.sub!(/\A([a-z]*)\b/) { |first| first.capitalize } if opts[:capitalize_first_letter]
     # Remove unnecessary periods at the end
     text.sub!(/([^.])\.+(\s*)\z/, '\1\2') if opts[:remove_all_periods_from_the_end]
     # Remove extraneous space before the end punctuation
     text.sub!(/\s+([!?]\s*)\z/, '\1') if opts[:remove_extraneous_space]
     # Fixes interior spaces
     text.gsub!(/ +/, ' ') if opts[:fixes_interior_spaces]
+    # Normalize whitespaces
+    text = normalize_whitespaces(text)
     # Strip whitespaces
     text.strip! if opts[:strip_whitespaces]
 
     text
+  end
+
+  @@whitespaces_regexp = Regexp.new("(\u00A0|\u1680|\u180E|[\u2000-\u200A]|\u2028|\u2029|\u202F|\u205F|\u3000)", "u").freeze
+
+  def self.normalize_whitespaces(text)
+    text.gsub(@@whitespaces_regexp, ' ')
   end
 
 end

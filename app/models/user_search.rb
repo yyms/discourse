@@ -1,36 +1,98 @@
+# Searches for a user by username or full text or name (if enabled in SiteSettings)
 class UserSearch
-  def self.search term, topic_id = nil
-    sql = User.sql_builder(
-"select id, username, name, email from users u
-/*left_join*/
-/*where*/
-/*order_by*/")
 
-
-    if topic_id
-      sql.left_join "(select distinct p.user_id from posts p where topic_id = :topic_id) s on s.user_id = u.id", topic_id: topic_id
-    end
-
-    if term.present?
-      sql.where("username_lower like :term_like or
-              to_tsvector('simple', name) @@
-              to_tsquery('simple',
-                regexp_replace(
-                  regexp_replace(
-                    cast(plainto_tsquery(:term) as text)
-                    ,'\''(?: |$)', ':*''', 'g'),
-                '''', '', 'g')
-              )", term: term, term_like: "#{term.downcase}%")
-
-      sql.order_by "case when username_lower = :term then 0 else 1 end asc"
-    end
-
-    if topic_id
-      sql.order_by "case when s.user_id is null then 0 else 1 end desc"
-    end
-
-    sql.order_by "case when last_seen_at is null then 0 else 1 end desc, last_seen_at desc, username asc limit(20)"
-
-    sql.exec
+  def initialize(term, opts={})
+    @term = term
+    @term_like = "#{term.downcase.gsub("_", "\\_")}%"
+    @topic_id = opts[:topic_id]
+    @topic_allowed_users = opts[:topic_allowed_users]
+    @searching_user = opts[:searching_user]
+    @limit = opts[:limit] || 20
   end
+
+  def scoped_users
+    users = User.where(active: true, staged: false)
+
+    unless @searching_user && @searching_user.staff?
+      users = users.not_suspended
+    end
+
+    # Only show users who have access to private topic
+    if @topic_id && @topic_allowed_users == "true"
+      topic = Topic.find_by(id: @topic_id)
+
+      if topic.category && topic.category.read_restricted
+        users = users.includes(:secure_categories)
+                     .where("users.admin = TRUE OR categories.id = ?", topic.category.id)
+                     .references(:categories)
+      end
+    end
+
+    users.limit(@limit)
+  end
+
+  def filtered_by_term_users
+    users = scoped_users
+
+    if @term.present?
+      if SiteSetting.enable_names? && @term !~ /[_\.-]/
+        query = Search.ts_query(@term, "simple")
+
+        users = users.includes(:user_search_data)
+                     .references(:user_search_data)
+                     .where("user_search_data.search_data @@ #{query}")
+                     .order(User.sql_fragment("CASE WHEN username_lower LIKE ? THEN 0 ELSE 1 END ASC", @term_like))
+
+      else
+        users = users.where("username_lower LIKE :term_like", term_like: @term_like)
+      end
+    end
+
+    users
+  end
+
+  def search_ids
+    users = Set.new
+
+    # 1. exact username matches
+    if @term.present?
+      scoped_users.where(username_lower: @term.downcase)
+                  .limit(@limit)
+                  .pluck(:id)
+                  .each { |id| users << id }
+
+    end
+
+    return users.to_a if users.length >= @limit
+
+    # 2. in topic
+    if @topic_id
+      filtered_by_term_users.where('users.id IN (SELECT p.user_id FROM posts p WHERE topic_id = ?)', @topic_id)
+                            .order('last_seen_at DESC')
+                            .limit(@limit - users.length)
+                            .pluck(:id)
+                            .each { |id| users << id }
+    end
+
+    return users.to_a if users.length >= @limit
+
+    # 3. global matches
+    filtered_by_term_users.order('last_seen_at DESC')
+                            .limit(@limit - users.length)
+                            .pluck(:id)
+                            .each { |id| users << id }
+
+    users.to_a
+  end
+
+  def search
+    ids = search_ids
+    return User.where("0=1") if ids.empty?
+
+    User.joins("JOIN (SELECT unnest uid, row_number() OVER () AS rn
+      FROM unnest('{#{ids.join(",")}}'::int[])
+    ) x on uid = users.id")
+        .order("rn")
+  end
+
 end

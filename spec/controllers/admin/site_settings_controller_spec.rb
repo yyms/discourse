@@ -1,9 +1,9 @@
-require 'spec_helper'
+require 'rails_helper'
 
 describe Admin::SiteSettingsController do
 
   it "is a subclass of AdminController" do
-    (Admin::SiteSettingsController < Admin::AdminController).should be_true
+    expect(Admin::SiteSettingsController < Admin::AdminController).to eq(true)
   end
 
   context 'while logged in as an admin' do
@@ -14,30 +14,45 @@ describe Admin::SiteSettingsController do
     context 'index' do
       it 'returns success' do
         xhr :get, :index
-        response.should be_success
+        expect(response).to be_success
       end
 
       it 'returns JSON' do
         xhr :get, :index
-        ::JSON.parse(response.body).should be_present
+        expect(::JSON.parse(response.body)).to be_present
       end
     end
 
     context 'update' do
 
-      it 'requires a value parameter' do
-        lambda { xhr :put, :update, id: 'test_setting' }.should raise_error(Discourse::InvalidParameters)
+      before do
+        SiteSetting.setting(:test_setting, "default")
       end
 
       it 'sets the value when the param is present' do
         SiteSetting.expects(:'test_setting=').with('hello').once
-        xhr :put, :update, id: 'test_setting', value: 'hello'
+        xhr :put, :update, id: 'test_setting', test_setting: 'hello'
       end
 
+      it 'allows value to be a blank string' do
+        SiteSetting.expects(:'test_setting=').with('').once
+        xhr :put, :update, id: 'test_setting', test_setting: ''
+      end
+
+      it 'logs the change' do
+        SiteSetting.stubs(:test_setting).returns('previous')
+        SiteSetting.expects(:'test_setting=').with('hello').once
+        StaffActionLogger.any_instance.expects(:log_site_setting_change).with('test_setting', 'previous', 'hello')
+        xhr :put, :update, id: 'test_setting', test_setting: 'hello'
+      end
+
+      it 'fails when a setting does not exist' do
+        expect {
+          xhr :put, :update, id: 'provider', provider: 'gotcha'
+        }.to raise_error(ArgumentError)
+      end
     end
 
   end
-
-
 
 end

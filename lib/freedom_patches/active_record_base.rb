@@ -4,11 +4,15 @@ class ActiveRecord::Base
   def self.exec_sql(*args)
     conn = ActiveRecord::Base.connection
     sql = ActiveRecord::Base.send(:sanitize_sql_array, args)
-    conn.execute(sql)
+    conn.raw_connection.exec(sql)
   end
 
   def self.exec_sql_row_count(*args)
     exec_sql(*args).cmd_tuples
+  end
+
+  def self.sql_fragment(*sql_array)
+    ActiveRecord::Base.send(:sanitize_sql_array, sql_array)
   end
 
   def exec_sql(*args)

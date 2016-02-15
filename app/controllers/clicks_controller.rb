@@ -1,25 +1,31 @@
 class ClicksController < ApplicationController
 
-  skip_before_filter :check_xhr
+  skip_before_filter :check_xhr, :preload_json
 
   def track
-    requires_parameter(:url)
-    if params[:topic_id].present? || params[:post_id].present?
-      args = {url: params[:url], ip: request.remote_ip}
-      args[:user_id] = current_user.id if current_user.present?
-      args[:post_id] = params[:post_id].to_i if params[:post_id].present?
-      args[:topic_id] = params[:topic_id].to_i if params[:topic_id].present?
+    raise Discourse::NotFound unless params[:url]
 
-      TopicLinkClick.create_from(args)
+    params = track_params.merge(ip: request.remote_ip)
+
+    if params[:topic_id].present? || params[:post_id].present?
+      params.merge!({ user_id: current_user.id }) if current_user.present?
+      @redirect_url = TopicLinkClick.create_from(params)
     end
 
     # Sometimes we want to record a link without a 302. Since XHR has to load the redirected
     # URL we want it to not return a 302 in those cases.
-    if params[:redirect] == 'false'
+    if params[:redirect] == 'false' || @redirect_url.blank?
       render nothing: true
     else
-      redirect_to(params[:url])
+      redirect_to(@redirect_url)
     end
   end
+
+  private
+
+    def track_params
+      params.require(:url)
+      params.permit(:url, :post_id, :topic_id, :redirect)
+    end
 
 end

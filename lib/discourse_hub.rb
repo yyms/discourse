@@ -3,50 +3,14 @@ require_dependency 'version'
 
 module DiscourseHub
 
-  class NicknameUnavailable < RuntimeError; end
-
-  def self.nickname_available?(nickname)
-    json = get('/users/nickname_available', {nickname: nickname})
-    [json['available'], json['suggestion']]
+  def self.version_check_payload
+    {
+      installed_version: Discourse::VERSION::STRING
+    }.merge!( Discourse.git_branch == "unknown" ? {} : {branch: Discourse.git_branch})
   end
-
-  def self.nickname_match?(nickname, email)
-    json = get('/users/nickname_match', {nickname: nickname, email: email})
-    [json['match'], json['available'] || false, json['suggestion']]
-  end
-
-  def self.register_nickname(nickname, email)
-    json = post('/users', {nickname: nickname, email: email})
-    if json.has_key?('success')
-      true
-    else
-      raise NicknameUnavailable  # TODO: report ALL the errors
-    end
-  end
-
-  def self.unregister_nickname(nickname)
-    json = delete('/memberships/' + nickname)
-    json.has_key?('success')
-  end
-
-  def self.change_nickname(current_nickname, new_nickname)
-    json = put("/users/#{current_nickname}/nickname", {nickname: new_nickname})
-    if json.has_key?('success')
-      true
-    else
-      raise NicknameUnavailable  # TODO: report ALL the errors
-    end
-  end
-
 
   def self.discourse_version_check
-    get('/version_check', {
-      installed_version: Discourse::VERSION::STRING,
-      forum_title: SiteSetting.title,
-      forum_domain: Discourse.current_hostname,
-      contact_email: SiteSetting.contact_email,
-      topic_count: Topic.listable_topics.count
-    })
+    get('/version_check', version_check_payload)
   end
 
 
@@ -69,26 +33,27 @@ module DiscourseHub
   end
 
   def self.singular_action(action, rel_url, params={})
-    JSON.parse RestClient.send(action, "#{hub_base_url}#{rel_url}", {params: {access_token: access_token}.merge(params), accept: accepts } )
+    JSON.parse RestClient.send(action, "#{hub_base_url}#{rel_url}", {params: params, accept: accepts, referer: referer } )
   end
 
   def self.collection_action(action, rel_url, params={})
-    JSON.parse RestClient.send(action, "#{hub_base_url}#{rel_url}", {access_token: access_token}.merge(params), content_type: :json, accept: accepts )
+    JSON.parse RestClient.send(action, "#{hub_base_url}#{rel_url}", params, content_type: :json, accept: accepts, referer: referer )
   end
 
   def self.hub_base_url
-    if Rails.env == 'production'
+    if Rails.env.production?
       'http://api.discourse.org/api'
     else
-      'http://local.hub:3000/api'
+      ENV['HUB_BASE_URL'] || 'http://local.hub:3000/api'
     end
-  end
-
-  def self.access_token
-    SiteSetting.discourse_org_access_key
   end
 
   def self.accepts
     [:json, 'application/vnd.discoursehub.v1']
   end
+
+  def self.referer
+    Discourse.base_url
+  end
+
 end

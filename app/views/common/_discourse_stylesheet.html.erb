@@ -1,8 +1,13 @@
-<%- unless SiteCustomization.override_default_style(session[:preview_style]) %>
-  <%=stylesheet_link_tag "application"%>
+<%- if rtl? %>
+  <%= DiscourseStylesheets.stylesheet_link_tag(mobile_view? ? :mobile_rtl : :desktop_rtl) %>
+<%- else %>
+  <%= DiscourseStylesheets.stylesheet_link_tag(mobile_view? ? :mobile : :desktop) %>
 <%- end %>
 
 <%- if staff? %>
-  <%= stylesheet_link_tag "admin"%>
-<%-end%>
-<%=SiteCustomization.custom_stylesheet(session[:preview_style])%>
+  <%= DiscourseStylesheets.stylesheet_link_tag(:admin) %>
+<%- end %>
+
+<%- unless customization_disabled? %>
+  <%= SiteCustomization.custom_stylesheet(session[:preview_style], mobile_view? ? :mobile : :desktop) %>
+<%- end %>

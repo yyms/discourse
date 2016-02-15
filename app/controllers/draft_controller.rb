@@ -1,6 +1,7 @@
 class DraftController < ApplicationController
   before_filter :ensure_logged_in
-  skip_before_filter :check_xhr
+  # TODO really do we need to skip this?
+  skip_before_filter :check_xhr, :preload_json
 
   def show
     seq = params[:sequence] || DraftSequence.current(current_user, params[:draft_key])
@@ -9,12 +10,12 @@ class DraftController < ApplicationController
 
   def update
     Draft.set(current_user, params[:draft_key], params[:sequence].to_i, params[:data])
-    render text: 'ok'
+    render json: success_json
   end
 
   def destroy
     Draft.clear(current_user, params[:draft_key], params[:sequence].to_i)
-    render text: 'ok'
+    render json: success_json
   end
 
 end

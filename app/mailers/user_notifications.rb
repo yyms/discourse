@@ -1,94 +1,339 @@
 require_dependency 'markdown_linker'
-require_dependency 'email_builder'
+require_dependency 'email/message_builder'
+require_dependency 'age_words'
 
 class UserNotifications < ActionMailer::Base
+  helper :application
   default charset: 'UTF-8'
 
-  include EmailBuilder
+  include Email::BuildEmailHelper
 
   def signup(user, opts={})
-    build_email(user.email, "user_notifications.signup", email_token: opts[:email_token])
+    build_email(user.email,
+                template: "user_notifications.signup",
+                email_token: opts[:email_token])
+  end
+
+  def signup_after_approval(user, opts={})
+    build_email(user.email,
+                template: 'user_notifications.signup_after_approval',
+                email_token: opts[:email_token],
+                new_user_tips: I18n.t('system_messages.usage_tips.text_body_template', base_url: Discourse.base_url))
   end
 
   def authorize_email(user, opts={})
-    build_email(user.email, "user_notifications.authorize_email", email_token: opts[:email_token])
+    build_email(user.email,
+                template: "user_notifications.authorize_email",
+                email_token: opts[:email_token])
   end
 
   def forgot_password(user, opts={})
-    build_email(user.email, "user_notifications.forgot_password", email_token: opts[:email_token])
+    build_email(user.email,
+                template: user.has_password? ? "user_notifications.forgot_password" : "user_notifications.set_password",
+                email_token: opts[:email_token])
   end
 
-  def private_message(user, opts={})
-    post = opts[:post]
+  def admin_login(user, opts={})
+    build_email(user.email,
+                template: "user_notifications.admin_login",
+                email_token: opts[:email_token])
+  end
 
-    build_email user.email,
-                "user_notifications.private_message",
-                message: post.raw,
-                url: post.url,
-                subject_prefix: post.post_number != 1 ? "re: " : "",
-                topic_title: post.topic.title,
-                private_message_from: post.user.name,
-                from: "#{I18n.t(:via, username: post.user.name, site_name: SiteSetting.title)} <#{SiteSetting.notification_email}>",
-                add_unsubscribe_link: true
+  def account_created(user, opts={})
+    build_email(user.email,
+                template: "user_notifications.account_created",
+                email_token: opts[:email_token])
+  end
+
+  def short_date(dt)
+    if dt.year == Time.now.year
+      I18n.l(dt, format: :short_no_year)
+    else
+      I18n.l(dt, format: :date_only)
+    end
   end
 
   def digest(user, opts={})
     @user = user
     @base_url = Discourse.base_url
 
-    min_date = @user.last_emailed_at || @user.last_seen_at || 1.month.ago
+    min_date = opts[:since] || @user.last_emailed_at || @user.last_seen_at || 1.month.ago
 
-    @site_name = SiteSetting.title
+    @site_name = SiteSetting.email_prefix.presence || SiteSetting.title
 
-    @last_seen_at = I18n.l(@user.last_seen_at || @user.created_at, format: :short)
+    @header_color = ColorScheme.hex_for_name('header_background')
+    @last_seen_at = short_date(@user.last_seen_at || @user.created_at)
 
-    # A list of new topics to show the user
-    @new_topics = Topic.new_topics(min_date)
-    @notifications = @user.notifications.interesting_after(min_date)
-
-    @markdown_linker = MarkdownLinker.new(Discourse.base_url)
+    # A list of topics to show the user
+    @featured_topics = Topic.for_digest(user, min_date, limit: SiteSetting.digest_topics, top_order: true).to_a
 
     # Don't send email unless there is content in it
-    if @new_topics.present? || @notifications.present?
-      mail to: user.email,
-           from: "#{I18n.t('user_notifications.digest.from', site_name: SiteSetting.title)} <#{SiteSetting.notification_email}>",
-           subject: I18n.t('user_notifications.digest.subject_template',
-                            site_name: @site_name,
-                            date: I18n.l(Time.now, format: :short))
+    if @featured_topics.present?
+      featured_topic_ids = @featured_topics.map(&:id)
+
+      @new_topics_since_seen = Topic.new_since_last_seen(user, min_date, featured_topic_ids).count
+      if @new_topics_since_seen > SiteSetting.digest_topics
+        category_counts = Topic.new_since_last_seen(user, min_date, featured_topic_ids).group(:category_id).count
+
+        @new_by_category = []
+        if category_counts.present?
+          Category.where(id: category_counts.keys).each do |c|
+            @new_by_category << [c, category_counts[c.id]]
+          end
+          @new_by_category.sort_by! {|c| -c[1]}
+        end
+      end
+
+      @featured_topics, @new_topics = @featured_topics[0..4], @featured_topics[5..-1]
+      @markdown_linker = MarkdownLinker.new(Discourse.base_url)
+      @unsubscribe_key = DigestUnsubscribeKey.create_key_for(@user)
+
+      build_email user.email,
+                  from_alias: I18n.t('user_notifications.digest.from', site_name: SiteSetting.title),
+                  subject: I18n.t('user_notifications.digest.subject_template',
+                                  site_name: @site_name,
+                                  date: short_date(Time.now))
     end
   end
 
-  def notification_template(user, opts)
-    @notification = opts[:notification]
-    return unless @notification.present?
+  def user_replied(user, opts)
+    opts[:allow_reply_by_email] = true
+    opts[:use_site_subject] = true
+    opts[:show_category_in_subject] = true
+    notification_email(user, opts)
+  end
 
-    @post = opts[:post]
-    return unless @post.present?
+  def user_quoted(user, opts)
+    opts[:allow_reply_by_email] = true
+    opts[:use_site_subject] = true
+    opts[:show_category_in_subject] = true
+    notification_email(user, opts)
+  end
 
-    username = @notification.data_hash[:display_username]
-    notification_type = Notification.types[opts[:notification].notification_type].to_s
+  def user_mentioned(user, opts)
+    opts[:allow_reply_by_email] = true
+    opts[:use_site_subject] = true
+    opts[:show_category_in_subject] = true
+    notification_email(user, opts)
+  end
+
+  def group_mentioned(user, opts)
+    opts[:allow_reply_by_email] = true
+    opts[:use_site_subject] = true
+    opts[:show_category_in_subject] = true
+    notification_email(user, opts)
+  end
+
+  def user_posted(user, opts)
+    opts[:allow_reply_by_email] = true
+    opts[:use_site_subject] = true
+    opts[:add_re_to_subject] = true
+    opts[:show_category_in_subject] = true
+    notification_email(user, opts)
+  end
+
+  def user_private_message(user, opts)
+    opts[:allow_reply_by_email] = true
+    opts[:use_site_subject] = true
+    opts[:add_re_to_subject] = true
+    opts[:show_category_in_subject] = false
+
+    # We use the 'user_posted' event when you are emailed a post in a PM.
+    opts[:notification_type] = 'posted'
+
+    notification_email(user, opts)
+  end
+
+  def user_invited_to_private_message(user, opts)
+    opts[:use_template_html] = true
+    notification_email(user, opts)
+  end
+
+  def user_invited_to_topic(user, opts)
+    opts[:use_template_html] = true
+    opts[:show_category_in_subject] = true
+    notification_email(user, opts)
+  end
+
+  def mailing_list_notify(user, post)
+    opts = {
+      post: post,
+      allow_reply_by_email: true,
+      use_site_subject: true,
+      add_re_to_subject: true,
+      show_category_in_subject: true,
+      notification_type: "posted",
+      notification_data_hash: {
+        original_username: post.user.username,
+        topic_title: post.topic.title,
+      },
+    }
+    notification_email(user, opts)
+  end
+
+  protected
+
+  def email_post_markdown(post)
+    result = "[email-indent]\n"
+    result << "#{post.raw}\n\n"
+    result << "#{I18n.t('user_notifications.posted_by', username: post.username, post_date: post.created_at.strftime("%m/%d/%Y"))}\n\n"
+    result << "[/email-indent]\n"
+    result
+  end
+
+  class UserNotificationRenderer < ActionView::Base
+    include UserNotificationsHelper
+  end
+
+  def self.get_context_posts(post, topic_user)
+    allowed_post_types = [Post.types[:regular]]
+    allowed_post_types << Post.types[:whisper] if topic_user.try(:user).try(:staff?)
+
+    context_posts = Post.where(topic_id: post.topic_id)
+                        .where("post_number < ?", post.post_number)
+                        .where(user_deleted: false)
+                        .where(hidden: false)
+                        .where(post_type: allowed_post_types)
+                        .order('created_at desc')
+                        .limit(SiteSetting.email_posts_context)
+
+    if topic_user && topic_user.last_emailed_post_number
+      context_posts = context_posts.where("post_number > ?", topic_user.last_emailed_post_number)
+    end
+
+    context_posts
+  end
+
+  def notification_email(user, opts)
+    notification_type = opts[:notification_type]
+    notification_data = opts[:notification_data_hash]
+    post = opts[:post]
+
+    unless String === notification_type
+      if Numeric === notification_type
+        notification_type = Notification.types[notification_type]
+      end
+      notification_type = notification_type.to_s
+    end
+
+    user_name = notification_data[:original_username]
+
+    if post && SiteSetting.enable_names && SiteSetting.display_name_on_email_from
+      name = User.where(id: post.user_id).pluck(:name).first
+      user_name = name unless name.blank?
+    end
+
+    title = notification_data[:topic_title]
+    allow_reply_by_email = opts[:allow_reply_by_email] unless user.suspended?
+    use_site_subject = opts[:use_site_subject]
+    add_re_to_subject = opts[:add_re_to_subject]
+    show_category_in_subject = opts[:show_category_in_subject]
+    use_template_html = opts[:use_template_html]
+    original_username = notification_data[:original_username] || notification_data[:display_username]
+
+    send_notification_email(
+      title: title,
+      post: post,
+      username: original_username,
+      from_alias: user_name,
+      allow_reply_by_email: allow_reply_by_email,
+      use_site_subject: use_site_subject,
+      add_re_to_subject: add_re_to_subject,
+      show_category_in_subject: show_category_in_subject,
+      notification_type: notification_type,
+      use_template_html: use_template_html,
+      user: user
+    )
+  end
+
+  def send_notification_email(opts)
+    post = opts[:post]
+    title = opts[:title]
+    allow_reply_by_email = opts[:allow_reply_by_email]
+    use_site_subject = opts[:use_site_subject]
+    add_re_to_subject = opts[:add_re_to_subject] && post.post_number > 1
+    username = opts[:username]
+    from_alias = opts[:from_alias]
+    notification_type = opts[:notification_type]
+    user = opts[:user]
+
+    # category name
+    category = Topic.find_by(id: post.topic_id).category
+    if opts[:show_category_in_subject] && post.topic_id && category && !category.uncategorized?
+      show_category_in_subject = category.name
+
+      # subcategory case
+      if !category.parent_category_id.nil?
+        show_category_in_subject = "#{Category.find_by(id: category.parent_category_id).name}/#{show_category_in_subject}"
+      end
+    else
+      show_category_in_subject = nil
+    end
+
+    context = ""
+    tu = TopicUser.get(post.topic_id, user)
+    context_posts = self.class.get_context_posts(post, tu)
+
+    # make .present? cheaper
+    context_posts = context_posts.to_a
+
+    if context_posts.present?
+      context << "-- \n*#{I18n.t('user_notifications.previous_discussion')}*\n"
+      context_posts.each do |cp|
+        context << email_post_markdown(cp)
+      end
+    end
+
+    topic_excerpt = ""
+    if opts[:use_template_html]
+      topic_excerpt = post.excerpt.gsub("\n", " ") if post.is_first_post? && post.excerpt
+    else
+      html = UserNotificationRenderer.new(Rails.configuration.paths["app/views"]).render(
+        template: 'email/notification',
+        format: :html,
+        locals: { context_posts: context_posts,
+                  post: post,
+                  classes: RTL.new(user).css_class
+        }
+      )
+    end
+
+    template = "user_notifications.user_#{notification_type}"
+    if post.topic.private_message?
+      template << "_pm"
+      template << "_staged" if user.staged?
+    end
 
     email_opts = {
-      topic_title: @notification.data_hash[:topic_title],
-      message: @post.raw,
-      url: @post.url,
+      topic_title: title,
+      topic_excerpt: topic_excerpt,
+      message: email_post_markdown(post),
+      url: post.url,
+      post_id: post.id,
+      topic_id: post.topic_id,
+      context: context,
       username: username,
-      add_unsubscribe_link: true
+      add_unsubscribe_link: !user.staged,
+      add_unsubscribe_via_email_link: user.mailing_list_mode,
+      unsubscribe_url: post.topic.unsubscribe_url,
+      allow_reply_by_email: allow_reply_by_email,
+      use_site_subject: use_site_subject,
+      add_re_to_subject: add_re_to_subject,
+      show_category_in_subject: show_category_in_subject,
+      private_reply: post.topic.private_message?,
+      include_respond_instructions: !user.suspended?,
+      template: template,
+      html_override: html,
+      site_description: SiteSetting.site_description,
+      site_title: SiteSetting.title,
+      style: :notification
     }
 
     # If we have a display name, change the from address
-    if username.present?
-      aliased = I18n.t(:via, username: username, site_name: SiteSetting.title)
-      email_opts[:from] = "#{aliased} <#{SiteSetting.notification_email}>"
-    end
+    email_opts[:from_alias] = from_alias if from_alias.present?
 
-    email = build_email user.email, "user_notifications.user_#{notification_type}", email_opts
+    TopicUser.change(user.id, post.topic_id, last_emailed_post_number: post.post_number)
+
+    build_email(user.email, email_opts)
   end
-
-  alias :user_invited_to_private_message :notification_template
-  alias :user_replied :notification_template
-  alias :user_quoted :notification_template
-  alias :user_mentioned :notification_template
-  alias :user_posted :notification_template
-
 end

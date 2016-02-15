@@ -9,4 +9,3 @@ task "images:compress" => :environment do
     end
   end
 end
-
