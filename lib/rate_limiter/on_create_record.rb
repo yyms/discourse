@@ -13,7 +13,11 @@ class RateLimiter
       return @rate_limiter if @rate_limiter.present?
 
       limit_key = "create_#{self.class.name.underscore}"
-      max_setting = SiteSetting.send("rate_limit_#{limit_key}")
+      max_setting = if user.new_user? and SiteSetting.has_setting?("rate_limit_new_user_#{limit_key}")
+        SiteSetting.send("rate_limit_new_user_#{limit_key}")
+      else
+        SiteSetting.send("rate_limit_#{limit_key}")
+      end
       @rate_limiter = RateLimiter.new(user, limit_key, 1, max_setting)
     end
 
@@ -21,35 +25,40 @@ class RateLimiter
       base.extend(ClassMethods)
     end
 
+    # For the lifetime of this instance, don't enforce rate limits.
+    def disable_rate_limits!
+      @rate_limits_disabled = true
+    end
+
     module ClassMethods
       def rate_limit(limiter_method=nil)
 
         limiter_method = limiter_method || :default_rate_limiter
 
-        self.after_create do
+        self.after_create do |*args|
+          next if @rate_limits_disabled
 
-          rate_limiter = send(limiter_method)
-          return unless rate_limiter.present?
-
-          rate_limiter.performed!
-          @performed ||= {}
-          @performed[limiter_method] = true
+          if rate_limiter = send(limiter_method)
+            rate_limiter.performed!
+            @performed ||= {}
+            @performed[limiter_method] = true
+          end
         end
 
         self.after_destroy do
-          rate_limiter = send(limiter_method)
-          return unless rate_limiter.present?
-
-          rate_limiter.rollback!
+          next if @rate_limits_disabled
+          if rate_limiter = send(limiter_method)
+            rate_limiter.rollback!
+          end
         end
 
         self.after_rollback do
-          rate_limiter = send(limiter_method)
-          return unless rate_limiter.present?
-
-          if @performed.present? && @performed[limiter_method]
-            rate_limiter.rollback!
-            @performed[limiter_method] = false
+          next if @rate_limits_disabled
+          if rate_limiter = send(limiter_method)
+            if @performed.present? && @performed[limiter_method]
+              rate_limiter.rollback!
+              @performed[limiter_method] = false
+            end
           end
         end
 

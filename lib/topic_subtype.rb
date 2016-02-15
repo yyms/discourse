@@ -9,8 +9,7 @@ class TopicSubtype
   end
 
   def attributes
-    {'id' => @id,
-     'options' => @options}
+    {'id' => @id, 'options' => @options }
   end
 
   def self.list
@@ -36,6 +35,10 @@ class TopicSubtype
 
   def self.notify_user
     'notify_user'
+  end
+
+  def self.pending_users_reminder
+    'pending_users'
   end
 
   def self.register(name, options={})

@@ -5,7 +5,7 @@
 
   @class PreloadStore
 **/
-PreloadStore = {
+window.PreloadStore = {
   data: {},
 
   /**
@@ -28,34 +28,33 @@ PreloadStore = {
     @method getAndRemove
     @param {String} key the key to look up the object with
     @param {function} finder a function to find the object with
-    @returns {Ember.Deferred} a promise that will eventually be the object we want.
+    @returns {Promise} a promise that will eventually be the object we want.
   **/
   getAndRemove: function(key, finder) {
-    var preloadStore = this;
-    return Ember.Deferred.promise(function(promise) {
-      if (preloadStore.data[key]) {
-        promise.resolve(preloadStore.data[key]);
-        delete preloadStore.data[key];
-      } else {
+    if (this.data[key]) {
+      var promise = Em.RSVP.resolve(this.data[key]);
+      delete this.data[key];
+      return promise;
+    }
 
-        if (finder) {
-          var result = finder();
+    if (finder) {
+      return new Ember.RSVP.Promise(function(resolve, reject) {
+        var result = finder();
 
-          // If the finder returns a promise, we support that too
-          if (result.then) {
-            result.then(function(result) {
-              return promise.resolve(result);
-            }, function(result) {
-              return promise.reject(result);
-            });
-          } else {
-            promise.resolve(result);
-          }
+        // If the finder returns a promise, we support that too
+        if (result && result.then) {
+          result.then(function(result) {
+            return resolve(result);
+          }, function(result) {
+            return reject(result);
+          });
         } else {
-          promise.resolve(null);
+          resolve(result);
         }
-      }
-    });
+      });
+    }
+
+    return Ember.RSVP.resolve(null);
   },
 
   /**
@@ -78,6 +77,14 @@ PreloadStore = {
   **/
   remove: function(key) {
     if (this.data[key]) delete this.data[key];
+  },
+
+  /**
+    Resets the contents of the store. Used in testing.
+
+  **/
+  reset: function() {
+    this.data = {};
   }
 
 };

@@ -1,8 +1,8 @@
-require 'spec_helper'
+require 'rails_helper'
 
 describe PostReply do
 
-  it { should belong_to :post }
-  it { should belong_to :reply }
+  it { is_expected.to belong_to :post }
+  it { is_expected.to belong_to :reply }
 
 end

@@ -1,271 +1,172 @@
-/*global Modernizr:true*/
-/*global assetPath:true*/
+/*global Favcount:true*/
+var DiscourseResolver = require('discourse/ember/resolver').default;
 
-/**
-  The main Discourse Application
+// Allow us to import Ember
+define('ember', ['exports'], function(__exports__) {
+  __exports__.default = Ember;
+});
 
-  @class Discourse
-  @extends Ember.Application
-**/
-Discourse = Ember.Application.createWithMixins({
+window.Discourse = Ember.Application.createWithMixins(Discourse.Ajax, {
   rootElement: '#main',
-
-  // Data we want to remember for a short period
-  transient: Em.Object.create(),
-
-  // Whether the app has focus or not
-  hasFocus: true,
-
-  // Are we currently scrolling?
-  scrolling: false,
-
-  // The highest seen post number by topic
-  highestSeenByTopic: {},
+  _docTitle: document.title,
 
   getURL: function(url) {
+    if (!url) return url;
 
-    // If it's a non relative URL, return it.
-    if (url.indexOf('http') === 0) return url;
+    // if it's a non relative URL, return it.
+    if (url !== '/' && !/^\/[^\/]/.test(url)) return url;
 
-    var u = (Discourse.BaseUri === undefined ? "/" : Discourse.BaseUri);
-    if (u[u.length-1] === '/') {
-      u = u.substring(0, u.length-1);
-    }
-    return u + url;
+    if (url.indexOf(Discourse.BaseUri) !== -1) return url;
+    if (url[0] !== "/") url = "/" + url;
+
+    return Discourse.BaseUri + url;
   },
 
-  titleChanged: function() {
-    var title;
-    title = "";
-    if (this.get('title')) {
-      title += "" + (this.get('title')) + " - ";
+  getURLWithCDN: function(url) {
+    url = this.getURL(url);
+    // only relative urls
+    if (Discourse.CDN && /^\/[^\/]/.test(url)) {
+      url = Discourse.CDN + url;
+    } else if (Discourse.S3CDN) {
+      url = url.replace(Discourse.S3BaseUrl, Discourse.S3CDN);
     }
-    title += Discourse.SiteSettings.title;
-    $('title').text(title);
-    if (!this.get('hasFocus') && this.get('notify')) {
-      title = "(*) " + title;
+    return url;
+  },
+
+  Resolver: DiscourseResolver,
+
+  _titleChanged: function() {
+    var title = this.get('_docTitle') || Discourse.SiteSettings.title;
+
+    // if we change this we can trigger changes on document.title
+    // only set if changed.
+    if($('title').text() !== title) {
+      $('title').text(title);
     }
-    // chrome bug workaround see: http://stackoverflow.com/questions/2952384/changing-the-window-title-when-focussing-the-window-doesnt-work-in-chrome
-    window.setTimeout(function() {
-      document.title = ".";
-      document.title = title;
-    }, 200);
-  }.observes('title', 'hasFocus', 'notify'),
 
-  currentUserChanged: function() {
+    var notifyCount = this.get('notifyCount');
+    if (notifyCount > 0 && !Discourse.User.currentProp('dynamic_favicon')) {
+      title = "(" + notifyCount + ") " + title;
+    }
 
-    // We don't want to receive any previous user notifications
-    var bus = Discourse.MessageBus;
-    bus.unsubscribe("/notification/*");
-    bus.callbackInterval = Discourse.SiteSettings.anon_polling_interval;
-    bus.enableLongPolling = false;
+    document.title = title;
+  }.observes('_docTitle', 'hasFocus', 'notifyCount'),
 
-    var user = this.get('currentUser');
-    if (user) {
-      bus.callbackInterval = Discourse.SiteSettings.polling_interval;
-      bus.enableLongPolling = true;
-      if (user.admin || user.moderator) {
-        bus.subscribe("/flagged_counts", function(data) {
-          user.set('site_flagged_posts_count', data.total);
-        });
+  faviconChanged: function() {
+    if(Discourse.User.currentProp('dynamic_favicon')) {
+      var url = Discourse.SiteSettings.favicon_url;
+      if (/^http/.test(url)) {
+        url = Discourse.getURL("/favicon/proxied?" + encodeURIComponent(url));
       }
-      bus.subscribe("/notification/" + user.id, (function(data) {
-        user.set('unread_notifications', data.unread_notifications);
-        user.set('unread_private_messages', data.unread_private_messages);
-      }), user.notification_channel_position);
-      bus.subscribe("/categories", function(data){
-        Discourse.get('site').set('categories', data.categories.map(function(c){
-          return Discourse.Category.create(c);
-        }));
-      });
+      new Favcount(url).set(
+        this.get('notifyCount')
+      );
     }
-  }.observes('currentUser'),
+  }.observes('notifyCount'),
 
   // The classes of buttons to show on a post
   postButtons: function() {
     return Discourse.SiteSettings.post_menu.split("|").map(function(i) {
-      return (i.replace(/\+/, '').capitalize());
+      return i.replace(/\+/, '').capitalize();
     });
-  }.property('Discourse.SiteSettings.post_menu'),
+  }.property(),
 
-  notifyTitle: function() {
-    this.set('notify', true);
+  notifyTitle: function(count) {
+    this.set('notifyCount', count);
   },
 
-  openComposer: function(opts) {
-    // TODO, remove container link
-    var composer = Discourse.__container__.lookup('controller:composer');
-    if (composer) composer.open(opts);
-  },
-
-  /**
-    Establishes global DOM events and bindings via jQuery.
-
-    @method bindDOMEvents
-  **/
-  bindDOMEvents: function() {
-    var $html, hasTouch;
-
-    $html = $('html');
-    hasTouch = false;
-
-    if ($html.hasClass('touch')) {
-      hasTouch = true;
+  notifyBackgroundCountIncrement: function() {
+    if (!this.get('hasFocus')) {
+      this.set('backgroundNotify', true);
+      this.set('notifyCount', (this.get('notifyCount') || 0) + 1);
     }
-
-    if (Modernizr.prefixed("MaxTouchPoints", navigator) > 1) {
-      hasTouch = true;
-    }
-
-    if (hasTouch) {
-      $html.addClass('discourse-touch');
-      this.touch = true;
-      this.hasTouch = true;
-    } else {
-      $html.addClass('discourse-no-touch');
-      this.touch = false;
-    }
-
-    $('#main').on('click.discourse', '[data-not-implemented=true]', function(e) {
-      e.preventDefault();
-      alert(Em.String.i18n('not_implemented'));
-      return false;
-    });
-
-    $('#main').on('click.discourse', 'a', function(e) {
-      if (e.isDefaultPrevented() || e.shiftKey || e.metaKey || e.ctrlKey) return;
-
-      var $currentTarget = $(e.currentTarget);
-      var href = $currentTarget.attr('href');
-      if (!href) return;
-      if (href === '#') return;
-      if ($currentTarget.attr('target')) return;
-      if ($currentTarget.data('auto-route')) return;
-
-      // If it's an ember #linkTo skip it
-      if ($currentTarget.hasClass('ember-view')) return;
-
-      if ($currentTarget.hasClass('lightbox')) return;
-      if (href.indexOf("mailto:") === 0) return;
-      if (href.match(/^http[s]?:\/\//i) && !href.match(new RegExp("^http:\\/\\/" + window.location.hostname, "i"))) return;
-
-      e.preventDefault();
-      Discourse.URL.routeTo(href);
-      return false;
-    });
-
-    $(window).focus(function() {
-      Discourse.set('hasFocus', true);
-      Discourse.set('notify', false);
-    }).blur(function() {
-      Discourse.set('hasFocus', false);
-    });
-
-    // Add a CSRF token to all AJAX requests
-    var csrfToken = $('meta[name=csrf-token]').attr('content');
-    $.ajaxPrefilter(function(options, originalOptions, xhr) {
-      if (!options.crossDomain) {
-        xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-      }
-    });
   },
 
-  /**
-    Log the current user out of Discourse
-
-    @method logout
-  **/
-  logout: function() {
-    Discourse.KeyValueStore.abandonLocal();
-    Discourse.ajax("/session/" + this.get('currentUser.username'), {
-      type: 'DELETE'
-    }).then(function() {
-      // Reloading will refresh unbound properties
-      window.location.reload();
-    });
-  },
+  resetBackgroundNotifyCount: function() {
+    if (this.get('hasFocus') && this.get('backgroundNotify')) {
+      this.set('notifyCount', 0);
+    }
+    this.set('backgroundNotify', false);
+  }.observes('hasFocus'),
 
   authenticationComplete: function(options) {
-    // TODO, how to dispatch this to the view without the container?
-    var loginView = Discourse.__container__.lookup('controller:modal').get('currentView');
-    return loginView.authenticationComplete(options);
+    // TODO, how to dispatch this to the controller without the container?
+    var loginController = Discourse.__container__.lookup('controller:login');
+    return loginController.authenticationComplete(options);
   },
 
   /**
-    Our own $.ajax method. Makes sure the .then method executes in an Ember runloop
-    for performance reasons. Also automatically adjusts the URL to support installs
-    in subfolders.
-
-    @method ajax
-  **/
-  ajax: function() {
-
-    var url, args;
-    if (arguments.length === 1) {
-      if (typeof arguments[0] === "string") {
-        url = arguments[0];
-        args = {};
-      } else {
-        args = arguments[0];
-        url = args.url;
-        delete args.url;
-      }
-    } else if (arguments.length === 2) {
-      url = arguments[0];
-      args = arguments[1];
-    }
-
-    if (args.success) {
-      console.warning("DEPRECATION: Discourse.ajax should use promises, received 'success' callback");
-    }
-    if (args.error) {
-      console.warning("DEPRECATION: Discourse.ajax should use promises, received 'error' callback");
-    }
-
-    return Ember.Deferred.promise(function (promise) {
-      var oldSuccess = args.success;
-      args.success = function(xhr) {
-        Ember.run(promise, promise.resolve, xhr);
-        if (oldSuccess) oldSuccess(xhr);
-      }
-
-      var oldError = args.error;
-      args.error = function(xhr) {
-
-        // If it's a parseerror, don't reject
-        if (xhr.status === 200) return args.success(xhr);
-
-        promise.reject(xhr);
-        if (oldError) oldError(xhr);
-      }
-
-      // We default to JSON on GET. If we don't, sometimes if the server doesn't return the proper header
-      // it will not be parsed as an object.
-      if (!args.type) args.type = 'GET';
-      if ((!args.dataType) && (args.type === 'GET')) args.dataType = 'json';
-
-      $.ajax(Discourse.getURL(url), args);
-    });
-  },
-
-  /**
-    Start up the Discourse application.
+    Start up the Discourse application by running all the initializers we've defined.
 
     @method start
   **/
   start: function() {
-    Discourse.bindDOMEvents();
-    Discourse.SiteSettings = PreloadStore.get('siteSettings');
-    Discourse.MessageBus.alwaysLongPoll = Discourse.Environment === "development";
-    Discourse.MessageBus.start();
-    Discourse.KeyValueStore.init("discourse_", Discourse.MessageBus);
-    // Make sure we delete preloaded data
-    PreloadStore.remove('siteSettings');
-    // Developer specific functions
-    Discourse.Development.setupProbes();
-    Discourse.Development.observeLiveChanges();
-  }
 
+    $('noscript').remove();
+
+    Ember.keys(requirejs._eak_seen).forEach(function(key) {
+      if (/\/pre\-initializers\//.test(key)) {
+        var module = require(key, null, null, true);
+        if (!module) { throw new Error(key + ' must export an initializer.'); }
+        Discourse.initializer(module.default);
+      }
+    });
+
+    Ember.keys(requirejs._eak_seen).forEach(function(key) {
+      if (/\/initializers\//.test(key)) {
+        var module = require(key, null, null, true);
+        if (!module) { throw new Error(key + ' must export an initializer.'); }
+
+        var init = module.default;
+        var oldInitialize = init.initialize;
+        init.initialize = function(app) {
+          oldInitialize.call(this, app.container, Discourse);
+        };
+
+        Discourse.instanceInitializer(init);
+      }
+    });
+
+  },
+
+  requiresRefresh: function(){
+    var desired = Discourse.get("desiredAssetVersion");
+    return desired && Discourse.get("currentAssetVersion") !== desired;
+  }.property("currentAssetVersion", "desiredAssetVersion"),
+
+
+  assetVersion: Ember.computed({
+    get: function() {
+      return this.get("currentAssetVersion");
+    },
+    set: function(key, val) {
+      if(val) {
+        if (this.get("currentAssetVersion")) {
+          this.set("desiredAssetVersion", val);
+        } else {
+          this.set("currentAssetVersion", val);
+        }
+      }
+      return this.get("currentAssetVersion");
+    }
+  })
 });
 
-Discourse.Router = Discourse.Router.reopen({ location: 'discourse_location' });
+function proxyDep(propName, moduleFunc, msg) {
+  if (Discourse.hasOwnProperty(propName)) { return; }
+  Object.defineProperty(Discourse, propName, {
+    get: function() {
+      msg = msg || "import the module";
+      Ember.warn("DEPRECATION: `Discourse." + propName + "` is deprecated, " + msg + ".");
+      return moduleFunc();
+    }
+  });
+}
+
+proxyDep('computed', function() { return require('discourse/lib/computed'); });
+proxyDep('Formatter', function() { return require('discourse/lib/formatter'); });
+proxyDep('PageTracker', function() { return require('discourse/lib/page-tracker').default; });
+proxyDep('URL', function() { return require('discourse/lib/url').default; });
+proxyDep('Quote', function() { return require('discourse/lib/quote').default; });
+proxyDep('debounce', function() { return require('discourse/lib/debounce').default; });
+proxyDep('View', function() { return Ember.View; }, "Use `Ember.View` instead");

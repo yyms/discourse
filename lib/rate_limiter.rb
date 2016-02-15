@@ -4,14 +4,37 @@ require_dependency 'rate_limiter/on_create_record'
 # A redis backed rate limiter.
 class RateLimiter
 
-  # We don't observe rate limits in test mode
-  def self.disabled?
-    Rails.env.test?
+  attr_reader :max, :secs, :user, :key
+
+  def self.key_prefix
+    "l-rate-limit:"
   end
 
-  def initialize(user, key, max, secs)
+  def self.disable
+    @disabled = true
+  end
+
+  def self.enable
+    @disabled = false
+  end
+
+  # We don't observe rate limits in test mode
+  def self.disabled?
+    @disabled || Rails.env.test?
+  end
+
+  def self.clear_all!
+    $redis.delete_prefixed(RateLimiter.key_prefix)
+  end
+
+  def build_key(type)
+    "#{RateLimiter.key_prefix}:#{@user && @user.id}:#{type}"
+  end
+
+  def initialize(user, type, max, secs)
     @user = user
-    @key = "rate-limit:#{@user.id}:#{key}"
+    @type = type
+    @key = build_key(type)
     @max = max
     @secs = secs
   end
@@ -21,33 +44,48 @@ class RateLimiter
   end
 
   def can_perform?
-    return true if RateLimiter.disabled?
-    return true if @user.staff?
-
-    result = $redis.get(@key)
-    return true if result.blank?
-    return true if result.to_i < @max
-    false
+    rate_unlimited? || is_under_limit?
   end
 
   def performed!
-    return if RateLimiter.disabled?
-    return if @user.staff?
+    return if rate_unlimited?
 
-    result = $redis.incr(@key).to_i
-    $redis.expire(@key, @secs) if result == 1
-    if result > @max
+    if is_under_limit?
+      # simple ring buffer.
+      $redis.lpush(@key, Time.now.to_i)
+      $redis.ltrim(@key, 0, @max - 1)
 
-      # In case we go over, clamp it to the maximum
-      $redis.decr(@key)
-
-      raise LimitExceeded.new($redis.ttl(@key))
+      # let's ensure we expire this key at some point, otherwise we have leaks
+      $redis.expire(@key, @secs * 2)
+    else
+      raise RateLimiter::LimitExceeded.new(seconds_to_wait, @type)
     end
   end
 
   def rollback!
     return if RateLimiter.disabled?
-    $redis.decr(@key)
+    $redis.lpop(@key)
   end
 
+  private
+
+  def seconds_to_wait
+    @secs - age_of_oldest
+  end
+
+  def age_of_oldest
+    # age of oldest event in buffer, in seconds
+    Time.now.to_i - $redis.lrange(@key, -1, -1).first.to_i
+  end
+
+  def is_under_limit?
+    # number of events in buffer less than max allowed? OR
+    ($redis.llen(@key) < @max) ||
+    # age bigger than silding window size?
+    (age_of_oldest > @secs)
+  end
+
+  def rate_unlimited?
+    !!(RateLimiter.disabled? || (@user && @user.staff?))
+  end
 end

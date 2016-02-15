@@ -1,5 +1,4 @@
-Fabricator(:category) do
-  name { sequence(:name) { |n| "Amazing Category #{n}" } }
-  user
+Fabricator(:embeddable_host) do
+  host "eviltrout.com"
+  category
 end
-

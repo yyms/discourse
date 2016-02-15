@@ -1,17 +1,23 @@
-class PostSerializer < ApplicationSerializer
+class PostSerializer < BasicPostSerializer
 
   # To pass in additional information we might need
-  attr_accessor :topic_slug
-  attr_accessor :topic_view
-  attr_accessor :parent_post
-  attr_accessor :add_raw
-  attr_accessor :single_post_link_counts
-  attr_accessor :draft_sequence
+  INSTANCE_VARS = [
+    :topic_view,
+    :parent_post,
+    :add_raw,
+    :add_title,
+    :single_post_link_counts,
+    :draft_sequence,
+    :post_actions,
+    :all_post_actions
+  ]
 
-  attributes :id,
-             :post_number,
+  INSTANCE_VARS.each do |v|
+    self.send(:attr_accessor, v)
+  end
+
+  attributes :post_number,
              :post_type,
-             :created_at,
              :updated_at,
              :reply_count,
              :reply_to_post_number,
@@ -21,38 +27,92 @@ class PostSerializer < ApplicationSerializer
              :reads,
              :score,
              :yours,
-             :topic_slug,
              :topic_id,
+             :topic_slug,
+             :topic_title,
+             :topic_html_title,
+             :category_id,
              :display_username,
+             :primary_group_name,
              :version,
              :can_edit,
              :can_delete,
              :can_recover,
+             :can_wiki,
              :link_counts,
-             :cooked,
              :read,
-             :username,
-             :name,
+             :user_title,
              :reply_to_user,
              :bookmarked,
              :raw,
              :actions_summary,
              :moderator?,
-             :avatar_template,
+             :admin?,
+             :staff?,
              :user_id,
              :draft_sequence,
              :hidden,
              :hidden_reason_id,
-             :deleted_at, 
-             :trust_level
+             :trust_level,
+             :deleted_at,
+             :deleted_by,
+             :user_deleted,
+             :edit_reason,
+             :can_view_edit_history,
+             :wiki,
+             :user_custom_fields,
+             :static_doc,
+             :via_email,
+             :action_code,
+             :action_code_who
 
-
-  def moderator?
-    object.user.moderator?
+  def initialize(object, opts)
+    super(object, opts)
+    PostSerializer::INSTANCE_VARS.each do |name|
+      if opts.include? name
+        self.send("#{name}=", opts[name])
+      end
+    end
   end
 
-  def avatar_template
-    object.user.avatar_template
+  def topic_slug
+    object.topic && object.topic.slug
+  end
+
+  def include_topic_title?
+    @add_title
+  end
+
+  def include_topic_html_title?
+    @add_title
+  end
+
+  def include_category_id?
+    @add_title
+  end
+
+  def topic_title
+    object.topic.title
+  end
+
+  def topic_html_title
+    object.topic.fancy_title
+  end
+
+  def category_id
+    object.topic.category_id
+  end
+
+  def moderator?
+    !!(object.try(:user).try(:moderator?))
+  end
+
+  def admin?
+    !!(object.try(:user).try(:admin?))
+  end
+
+  def staff?
+    !!(object.try(:user).try(:staff?))
   end
 
   def yours
@@ -71,8 +131,25 @@ class PostSerializer < ApplicationSerializer
     scope.can_recover_post?(object)
   end
 
-  def link_counts
+  def can_wiki
+    scope.can_wiki?(object)
+  end
 
+  def display_username
+    object.user.try(:name)
+  end
+
+  def primary_group_name
+    return nil unless object.user && object.user.primary_group_id
+
+    if @topic_view
+      @topic_view.primary_group_names[object.user.primary_group_id]
+    else
+      object.user.primary_group.name if object.user.primary_group
+    end
+  end
+
+  def link_counts
     return @single_post_link_counts if @single_post_link_counts.present?
 
     # TODO: This could be better, just porting the old one over
@@ -87,18 +164,6 @@ class PostSerializer < ApplicationSerializer
     end
   end
 
-  def cooked
-    if object.hidden && !scope.is_staff?
-      if scope.current_user && object.user_id == scope.current_user.id
-        I18n.t('flagging.you_must_edit')
-      else
-        I18n.t('flagging.user_must_edit')
-      end
-    else
-      object.filter_quotes(@parent_post)
-    end
-  end
-
   def read
     @topic_view.read?(object.post_number)
   end
@@ -107,35 +172,38 @@ class PostSerializer < ApplicationSerializer
     object.score || 0
   end
 
-  def display_username
-    object.user.name
-  end
-
-  def version
-    object.cached_version
-  end
-
-  def username
-    object.user.username
-  end
-
-  def name
-    object.user.name
+  def user_title
+    object.try(:user).try(:title)
   end
 
   def trust_level
-    object.user.trust_level
+    object.try(:user).try(:trust_level)
   end
 
   def reply_to_user
     {
       username: object.reply_to_user.username,
-      name: object.reply_to_user.name
+      avatar_template: object.reply_to_user.avatar_template
     }
   end
 
   def bookmarked
     true
+  end
+
+  def deleted_by
+    BasicUserSerializer.new(object.deleted_by, root: false).as_json
+  end
+
+  def include_deleted_by?
+    scope.is_staff? && object.deleted_by.present?
+  end
+
+  # Helper function to decide between #post_actions and @all_post_actions
+  def actions
+    return post_actions if post_actions.present?
+    return all_post_actions[object.id] if all_post_actions.present?
+    nil
   end
 
   # Summary of the actions taken on this post
@@ -146,28 +214,38 @@ class PostSerializer < ApplicationSerializer
       count_col = "#{sym}_count".to_sym
 
       count = object.send(count_col) if object.respond_to?(count_col)
-      count ||= 0
-      action_summary = {id: id,
-                        count: count,
-                        hidden: (sym == :vote),
-                        can_act: scope.post_can_act?(object, sym, taken_actions: post_actions)}
+      summary = { id: id, count: count }
+      summary[:hidden] = true if sym == :vote
+      summary[:can_act] = true if scope.post_can_act?(object, sym, taken_actions: actions)
+
+      if sym == :notify_user && scope.current_user.present? && scope.current_user == object.user
+        summary.delete(:can_act)
+      end
 
       # The following only applies if you're logged in
-      if action_summary[:can_act] && scope.current_user.present?
-        action_summary[:can_clear_flags] = scope.is_staff? && PostActionType.flag_types.values.include?(id)
+      if summary[:can_act] && scope.current_user.present?
+        summary[:can_defer_flags] = true if scope.is_staff? &&
+                                                   PostActionType.flag_types.values.include?(id) &&
+                                                   active_flags.present? && active_flags.has_key?(id) &&
+                                                   active_flags[id].count > 0
       end
 
-      if post_actions.present? && post_actions.has_key?(id)
-        action_summary[:acted] = true
-        action_summary[:can_undo] = scope.can_delete?(post_actions[id])
+      if actions.present? && actions.has_key?(id)
+        summary[:acted] = true
+        summary[:can_undo] = true if scope.can_delete?(actions[id])
       end
 
-      # anonymize flags
-      if !scope.is_staff? && PostActionType.flag_types.values.include?(id)
-        action_summary[:count] = action_summary[:acted] ? 1 : 0
+      # only show public data
+      unless scope.is_staff? || PostActionType.public_types.values.include?(id)
+        summary[:count] = summary[:acted] ? 1 : 0
       end
 
-      result << action_summary
+      summary.delete(:count) if summary[:count] == 0
+
+      # Only include it if the user can do it or it has a count
+      if summary[:can_act] || summary[:count]
+        result << summary
+      end
     end
 
     result
@@ -182,7 +260,7 @@ class PostSerializer < ApplicationSerializer
   end
 
   def include_raw?
-    @add_raw.present?
+    @add_raw.present? && (!object.hidden || scope.user.try(:staff?) || yours)
   end
 
   def include_link_counts?
@@ -196,16 +274,76 @@ class PostSerializer < ApplicationSerializer
   end
 
   def include_reply_to_user?
-    object.quoteless? && object.reply_to_user
+    !(SiteSetting.suppress_reply_when_quoting && object.reply_quoted?) && object.reply_to_user
   end
 
   def include_bookmarked?
-    post_actions.present? && post_actions.keys.include?(PostActionType.types[:bookmark])
+    actions.present? && actions.keys.include?(PostActionType.types[:bookmark])
+  end
+
+  def include_display_username?
+    SiteSetting.enable_names?
+  end
+
+  def can_view_edit_history
+    scope.can_view_edit_history?(object)
+  end
+
+  def user_custom_fields
+    @topic_view.user_custom_fields[object.user_id]
+  end
+
+  def include_user_custom_fields?
+    return if @topic_view.blank?
+    custom_fields = @topic_view.user_custom_fields
+    custom_fields && custom_fields[object.user_id]
+  end
+
+  def static_doc
+    true
+  end
+
+  def include_static_doc?
+    object.is_first_post? && Discourse.static_doc_topic_ids.include?(object.topic_id)
+  end
+
+  def include_via_email?
+    object.via_email?
+  end
+
+  def version
+    scope.is_staff? ? object.version : object.public_version
+  end
+
+  def include_action_code?
+    object.action_code.present?
+  end
+
+  def action_code_who
+    post_custom_fields["action_code_who"]
+  end
+
+  def include_action_code_who?
+    include_action_code? && action_code_who.present?
   end
 
   private
 
-  def post_actions
-    @post_actions ||= (@topic_view.present? && @topic_view.all_post_actions.present?) ? @topic_view.all_post_actions[object.id] : nil
-  end
+    def post_actions
+      @post_actions ||= (@topic_view.present? && @topic_view.all_post_actions.present?) ? @topic_view.all_post_actions[object.id] : nil
+    end
+
+    def active_flags
+      @active_flags ||= (@topic_view.present? && @topic_view.all_active_flags.present?) ? @topic_view.all_active_flags[object.id] : nil
+    end
+
+    def post_custom_fields
+      @post_custom_fields ||=
+        if @topic_view
+          (@topic_view.post_custom_fields && @topic_view.post_custom_fields[object.id]) || {}
+        else
+          object.custom_fields
+        end
+    end
+
 end
